@@ -10,6 +10,27 @@ export type MusicXmlNoteEvent = {
   hand: "left" | "right"
   staff: number
   measure: number
+  /** Dynamic marking if present (e.g. "p", "mf", "ff") */
+  dynamic?: string
+  /** Fingering if present (1-5) */
+  fingering?: number
+}
+
+export type MeasureMapEntry = {
+  measure: number
+  playthroughIndex: number
+  startSec: number
+  endSec: number
+}
+
+export type MusicXmlParseResult = {
+  events: MusicXmlNoteEvent[]
+  duration: number
+  measureMap: MeasureMapEntry[]
+  /** BPM detected from the score (first tempo marking) */
+  detectedBpm?: number
+  /** Time signature from the score */
+  timeSignature?: { beats: number; beatType: number }
 }
 
 const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"] as const
@@ -273,7 +294,7 @@ async function extractScoreXmlFromMxl(buffer: ArrayBuffer): Promise<string> {
   return await sorted[0].async("text")
 }
 
-export async function loadMusicXmlFromUrl(url: string, opts?: { bpm?: number }) {
+export async function loadMusicXmlFromUrl(url: string, opts?: { bpm?: number }): Promise<MusicXmlParseResult> {
   const fallbackBpm = opts?.bpm ?? 90
 
   const res = await fetch(url)
@@ -313,11 +334,19 @@ export async function loadMusicXmlFromUrl(url: string, opts?: { bpm?: number }) 
 // -----------------------------
 // PARTWISE (ordered, robust)
 // -----------------------------
-function parseScorePartwise(scoreChildren: any[], fallbackBpm: number) {
+function parseScorePartwise(scoreChildren: any[], fallbackBpm: number): MusicXmlParseResult {
   const partNodes = findAll(scoreChildren, "part")
   if (partNodes.length === 0) throw new Error("No <part> found")
 
   const eventsRaw: (MusicXmlNoteEvent & { _tie?: { start: boolean; stop: boolean } })[] = []
+  const measureTimestamps: { measure: number; startSec: number; endSec: number }[] = []
+
+  let detectedBpm: number | undefined
+  let timeSignature: { beats: number; beatType: number } | undefined
+  let currentDynamic: string | undefined
+
+  // We only need measure map from the first part (they share timing)
+  let firstPartDone = false
 
   for (const partNode of partNodes) {
     const partChildren = asArray(partNode["part"]) as any[]
@@ -329,10 +358,34 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number) {
 
     measures.forEach((mNode, mi) => {
       const measureChildren = asArray(mNode["measure"]) as any[]
+      const measureStartT = t
 
       // tempo change?
       const tempoHere = tempoFromMeasureChildren(measureChildren)
-      if (tempoHere) bpm = tempoHere
+      if (tempoHere) {
+        bpm = tempoHere
+        if (!detectedBpm) detectedBpm = tempoHere
+      }
+
+      // Extract dynamics from direction elements
+      for (const dir of findAll(measureChildren, "direction")) {
+        const dirChildren = asArray(dir["direction"]) as any[]
+        for (const dt of findAll(dirChildren, "direction-type")) {
+          const dtChildren = asArray(dt["direction-type"]) as any[]
+          const dynNode = findFirst(dtChildren, "dynamics")
+          if (dynNode) {
+            const dynChildren = asArray(dynNode["dynamics"]) as any[]
+            // The dynamic marking is the tag name of the first child (pp, p, mp, mf, f, ff, etc.)
+            for (const dc of dynChildren) {
+              const dynTag = firstTagName(dc)
+              if (dynTag && dynTag !== "#text" && dynTag !== ":@") {
+                currentDynamic = dynTag
+                break
+              }
+            }
+          }
+        }
+      }
 
       for (const item of measureChildren) {
         const tag = firstTagName(item)
@@ -343,6 +396,16 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number) {
           if (divText) {
             const d = safeNum(divText, divisionsPerQuarter)
             if (d > 0) divisionsPerQuarter = d
+          }
+          // Time signature
+          const timeNode = findFirst(attrsChildren, "time")
+          if (timeNode && !timeSignature) {
+            const timeChildren = asArray(timeNode["time"]) as any[]
+            const beats = safeNum(childText(timeChildren, "beats"), 0)
+            const beatType = safeNum(childText(timeChildren, "beat-type"), 0)
+            if (beats > 0 && beatType > 0) {
+              timeSignature = { beats, beatType }
+            }
           }
           continue
         }
@@ -404,6 +467,22 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number) {
           const tie = getTieTypesFromNoteChildren(noteChildren)
           const isChord = hasChild(noteChildren, "chord")
 
+          // Extract fingering from <technical><fingering>
+          let fingering: number | undefined
+          const notationsNode = findFirst(noteChildren, "notations")
+          if (notationsNode) {
+            const notChildren = asArray(notationsNode["notations"]) as any[]
+            const techNode = findFirst(notChildren, "technical")
+            if (techNode) {
+              const techChildren = asArray(techNode["technical"]) as any[]
+              const fingerText = childText(techChildren, "fingering")
+              if (fingerText) {
+                const f = safeNum(fingerText, 0)
+                if (f >= 1 && f <= 5) fingering = f
+              }
+            }
+          }
+
           eventsRaw.push({
             id: `m${mi + 1}-${eventsRaw.length}-${noteName}`,
             note: noteName,
@@ -413,13 +492,26 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number) {
             hand,
             staff,
             measure: mi + 1,
+            dynamic: currentDynamic,
+            fingering,
             _tie: tie,
           })
 
           if (!isChord) t += durSec
         }
       }
+
+      // Record measure boundaries (first part only)
+      if (!firstPartDone) {
+        measureTimestamps.push({
+          measure: mi + 1,
+          startSec: measureStartT,
+          endSec: Math.max(t, measureStartT + 0.001),
+        })
+      }
     })
+
+    firstPartDone = true
   }
 
   eventsRaw.sort((a, b) => a.startTime - b.startTime || a.midi - b.midi)
@@ -427,13 +519,22 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number) {
   merged.sort((a, b) => a.startTime - b.startTime || a.midi - b.midi)
 
   const duration = merged.length ? Math.max(...merged.map((e) => e.startTime + e.duration)) : 0
-  return { events: merged, duration }
+
+  // Build measure map (playthroughIndex = 0 since no repeat expansion yet)
+  const measureMap: MeasureMapEntry[] = measureTimestamps.map((m) => ({
+    measure: m.measure,
+    playthroughIndex: 0,
+    startSec: m.startSec,
+    endSec: m.endSec,
+  }))
+
+  return { events: merged, duration, measureMap, detectedBpm, timeSignature }
 }
 
 // -----------------------------
 // TIMEWISE (ordered, robust)
 // -----------------------------
-function parseScoreTimewise(scoreChildren: any[], fallbackBpm: number) {
+function parseScoreTimewise(scoreChildren: any[], fallbackBpm: number): MusicXmlParseResult {
   const measureNodes = findAll(scoreChildren, "measure")
   if (measureNodes.length === 0) throw new Error("No <measure> found")
 
@@ -556,5 +657,24 @@ function parseScoreTimewise(scoreChildren: any[], fallbackBpm: number) {
   merged.sort((a, b) => a.startTime - b.startTime || a.midi - b.midi)
 
   const duration = merged.length ? Math.max(...merged.map((e) => e.startTime + e.duration)) : 0
-  return { events: merged, duration }
+
+  // Build basic measure map from measure nodes
+  const measureMap: MeasureMapEntry[] = []
+  // For timewise, we approximate measure boundaries from events
+  const measureGroups = new Map<number, { min: number; max: number }>()
+  for (const e of merged) {
+    const g = measureGroups.get(e.measure)
+    const end = e.startTime + e.duration
+    if (g) {
+      g.min = Math.min(g.min, e.startTime)
+      g.max = Math.max(g.max, end)
+    } else {
+      measureGroups.set(e.measure, { min: e.startTime, max: end })
+    }
+  }
+  for (const [m, g] of Array.from(measureGroups.entries()).sort((a, b) => a[0] - b[0])) {
+    measureMap.push({ measure: m, playthroughIndex: 0, startSec: g.min, endSec: g.max })
+  }
+
+  return { events: merged, duration, measureMap }
 }
