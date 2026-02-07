@@ -63,10 +63,11 @@ async function detectNamingScheme(): Promise<NamingScheme> {
 
   for (const test of testNotes) {
     try {
-      const sharpResponse = await fetch(`/piano-mp3/${test.sharp}`, { method: "HEAD" })
+      // Encode '#' so it isn't treated as a URL fragment identifier
+      const sharpResponse = await fetch(`/piano-mp3/${encodeURIComponent(test.sharp)}`, { method: "HEAD" })
       if (sharpResponse.ok) return "sharp"
 
-      const flatResponse = await fetch(`/piano-mp3/${test.flat}`, { method: "HEAD" })
+      const flatResponse = await fetch(`/piano-mp3/${encodeURIComponent(test.flat)}`, { method: "HEAD" })
       if (flatResponse.ok) return "flat"
     } catch (e) {
       // Continue to next test
@@ -126,8 +127,9 @@ export class PianoAudioEngine {
 
   async load(): Promise<void> {
     try {
-      // Ensure audio context is initialized first
-      await Tone.start()
+      // NOTE: Do NOT call Tone.start() here.
+      // Browsers block AudioContext creation outside a user gesture.
+      // Tone.start() is called in play() which runs inside a click handler.
       
       // Detect naming scheme
       this.namingScheme = await detectNamingScheme()
