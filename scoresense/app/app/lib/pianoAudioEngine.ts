@@ -6,8 +6,7 @@ import * as Tone from "tone"
  * PianoAudioEngine: Tone.js-based piano audio playback with sample-based synthesis
  * 
  * Key features:
- * - Uses Tone.Sampler with MP3 samples from /public/piano-mp3
- * - Automatically detects note naming convention (C#4 vs Cs4)
+ * - Uses Tone.Sampler with Salamander Grand Piano samples from CDN
  * - Schedules notes using Tone.Part for perfect timing
  * - Supports chords (multiple notes at same startTime)
  * - Keeps long notes visible and audible
@@ -23,7 +22,6 @@ export interface Note {
   duration: number // in seconds
 }
 
-type NamingScheme = "sharp" | "flat" // "C#4" vs "Db4"
 type SamplingStatus = "loading" | "ready" | "error"
 
 export interface PianoAudioEngineState {
@@ -32,83 +30,46 @@ export interface PianoAudioEngineState {
 }
 
 /**
- * Generates all 88 piano keys (A0 to C8) as Tone.js note names
+ * Sparse sample map for Salamander Grand Piano (CDN-hosted).
+ * The Tone.Sampler interpolates between these ~3-semitone-apart samples
+ * to cover all 88 keys without needing every single file.
+ * 
+ * CDN filenames use "s" for sharps: Ds1.mp3, Fs1.mp3, etc.
  */
-function generatePianoNotes(): string[] {
-  const notes: string[] = []
-  const noteOrder = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-
-  // Start from A0 (MIDI 21)
-  let octave = 0
-  let startIndex = 9 // A is at index 9 in noteOrder
-
-  for (let i = 0; i < 88; i++) {
-    const noteIndex = (startIndex + i) % 12
-    const currentOctave = octave + Math.floor((startIndex + i) / 12)
-    notes.push(`${noteOrder[noteIndex]}${currentOctave}`)
-  }
-
-  return notes
+const SALAMANDER_SAMPLES: Record<string, string> = {
+  "A0": "A0.mp3",
+  "C1": "C1.mp3",
+  "D#1": "Ds1.mp3",
+  "F#1": "Fs1.mp3",
+  "A1": "A1.mp3",
+  "C2": "C2.mp3",
+  "D#2": "Ds2.mp3",
+  "F#2": "Fs2.mp3",
+  "A2": "A2.mp3",
+  "C3": "C3.mp3",
+  "D#3": "Ds3.mp3",
+  "F#3": "Fs3.mp3",
+  "A3": "A3.mp3",
+  "C4": "C4.mp3",
+  "D#4": "Ds4.mp3",
+  "F#4": "Fs4.mp3",
+  "A4": "A4.mp3",
+  "C5": "C5.mp3",
+  "D#5": "Ds5.mp3",
+  "F#5": "Fs5.mp3",
+  "A5": "A5.mp3",
+  "C6": "C6.mp3",
+  "D#6": "Ds6.mp3",
+  "F#6": "Fs6.mp3",
+  "A6": "A6.mp3",
+  "C7": "C7.mp3",
+  "D#7": "Ds7.mp3",
+  "F#7": "Fs7.mp3",
+  "A7": "A7.mp3",
+  "C8": "C8.mp3",
 }
 
-/**
- * Detects which naming convention is used by the sample files
- * Returns "sharp" for C#4.mp3 or "flat" for Db4.mp3
- */
-async function detectNamingScheme(): Promise<NamingScheme> {
-  const testNotes = [
-    { name: "C#4", sharp: "C#4.mp3", flat: "Db4.mp3" },
-    { name: "F#3", sharp: "F#3.mp3", flat: "Gb3.mp3" },
-  ]
-
-  for (const test of testNotes) {
-    try {
-      // Encode '#' so it isn't treated as a URL fragment identifier
-      const sharpResponse = await fetch(`/piano-mp3/${encodeURIComponent(test.sharp)}`, { method: "HEAD" })
-      if (sharpResponse.ok) return "sharp"
-
-      const flatResponse = await fetch(`/piano-mp3/${encodeURIComponent(test.flat)}`, { method: "HEAD" })
-      if (flatResponse.ok) return "flat"
-    } catch (e) {
-      // Continue to next test
-    }
-  }
-
-  // Default to flat if detection fails
-  console.warn("Could not detect naming scheme, defaulting to 'flat'")
-  return "flat"
-}
-
-/**
- * Converts note name to match the detected naming scheme
- * E.g., "C#4" -> "Db4" if scheme is "flat", "Db4" -> "C#4" if scheme is "sharp"
- */
-function convertNoteToScheme(noteName: string, scheme: NamingScheme): string {
-  const match = noteName.match(/^([A-G])(#|b)?(\d)$/)
-  if (!match) return noteName // invalid format, return as-is
-
-  const [, baseNote, accidental, octave] = match
-  const notes = ["C", "D", "E", "F", "G", "A", "B"]
-  const baseIdx = notes.indexOf(baseNote)
-
-  // Already in target scheme?
-  if (scheme === "sharp" && accidental === "#") return noteName
-  if (scheme === "flat" && accidental === "b") return noteName
-  if (!accidental) return noteName // natural note, no conversion needed
-
-  // Need to convert
-  if (scheme === "sharp" && accidental === "b") {
-    // Db -> C#: go down one note and add sharp
-    const nextIdx = (baseIdx - 1 + 7) % 7
-    return notes[nextIdx] + "#" + octave
-  } else if (scheme === "flat" && accidental === "#") {
-    // C# -> Db: go up one note and add flat
-    const nextIdx = (baseIdx + 1) % 7
-    return notes[nextIdx] + "b" + octave
-  }
-
-  return noteName
-}
+const SALAMANDER_BASE_URL = "https://tonejs.github.io/audio/salamander/"
 
 /**
  * Main Piano Audio Engine
@@ -120,7 +81,6 @@ export class PianoAudioEngine {
     status: "loading",
     error: null,
   }
-  private namingScheme: NamingScheme = "flat"
   private notes: Note[] = []
   private basePlaybackRate: number = 1
   private uiTempo: number = 100
@@ -130,30 +90,19 @@ export class PianoAudioEngine {
       // NOTE: Do NOT call Tone.start() here.
       // Browsers block AudioContext creation outside a user gesture.
       // Tone.start() is called in play() which runs inside a click handler.
-      
-      // Detect naming scheme
-      this.namingScheme = await detectNamingScheme()
-      console.log(`Piano samples detected using '${this.namingScheme}' naming scheme`)
 
-      // Build URL map for all 88 keys
-      const pianoNotes = generatePianoNotes()
-      const urls: Record<string, string> = {}
+      console.log("Loading Salamander Grand Piano samples from CDN...")
 
-      for (const noteName of pianoNotes) {
-        const sampleName = convertNoteToScheme(noteName, this.namingScheme)
-        urls[noteName] = `/piano-mp3/${sampleName}.mp3`
-      }
-
-      // Create sampler with proper error handling
+      // Create sampler with CDN-hosted Salamander samples
       const samplerPromise = new Promise<void>((resolve, reject) => {
         let timeout: NodeJS.Timeout
         
         this.sampler = new Tone.Sampler({
-          urls,
-          baseUrl: "/",
+          urls: SALAMANDER_SAMPLES,
+          baseUrl: SALAMANDER_BASE_URL,
           onload: () => {
             clearTimeout(timeout)
-            console.log("Piano samples loaded successfully")
+            console.log("Salamander piano samples loaded successfully")
             this.state = { status: "ready", error: null }
             resolve()
           },
@@ -166,13 +115,13 @@ export class PianoAudioEngine {
           },
         }).toDestination()
 
-        // Timeout after 10 seconds
+        // Timeout after 30 seconds (CDN loading can take a moment)
         timeout = setTimeout(() => {
-          const timeoutMsg = "Sampler load timeout after 10 seconds"
+          const timeoutMsg = "Sampler load timeout after 30 seconds"
           console.error(timeoutMsg)
           this.state = { status: "error", error: timeoutMsg }
           reject(new Error(timeoutMsg))
-        }, 10000)
+        }, 30000)
       })
 
       await samplerPromise
