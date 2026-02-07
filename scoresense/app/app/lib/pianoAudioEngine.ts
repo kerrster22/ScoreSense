@@ -85,6 +85,12 @@ export class PianoAudioEngine {
   private basePlaybackRate: number = 1
   private uiTempo: number = 100
 
+  // Loop state
+  private loopEnabled: boolean = false
+  private loopStartSec: number = 0
+  private loopEndSec: number = 0
+  private isLoopJumping: boolean = false // guard to prevent re-entrant loop wraps
+
   async load(): Promise<void> {
     try {
       // NOTE: Do NOT call Tone.start() here.
@@ -225,12 +231,96 @@ export class PianoAudioEngine {
   }
 
   /**
-   * Seek to a specific time (in "piece seconds", accounting for playback rate)
+   * Seek to a specific time (in "piece seconds", accounting for playback rate).
+   * Cancels all currently scheduled audio events and re-schedules from the new
+   * position to avoid stuck/duplicate notes.
+   *
+   * @param seconds  Target position in piece time
+   * @param options  resume – if true, continue playing after seek
    */
-  seek(seconds: number): void {
-    // Convert piece time to transport time
-    const transportTime = seconds / this.basePlaybackRate
+  seek(seconds: number, options?: { resume?: boolean }): void {
+    const duration = this.getDuration()
+    const clamped = Math.max(0, Math.min(seconds, duration))
+
+    const wasPlaying = Tone.Transport.state === "started"
+
+    // Pause transport while we re-position
+    if (wasPlaying) {
+      Tone.Transport.pause()
+    }
+
+    // Cancel any previously-scheduled note events and rebuild the Part
+    Tone.Transport.cancel()
+
+    // Move transport head
+    const transportTime = clamped / this.basePlaybackRate
     Tone.Transport.seconds = transportTime
+
+    // Re-schedule notes from the beginning (Part handles offset via Transport.seconds)
+    this.rescheduleNotes()
+
+    // Resume if requested or if we were already playing
+    const shouldResume = options?.resume ?? wasPlaying
+    if (shouldResume) {
+      Tone.Transport.start()
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Loop
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Enable / disable looping with a given range (in piece-time seconds).
+   */
+  setLoop(opts: { enabled: boolean; startSec?: number; endSec?: number }): void {
+    this.loopEnabled = opts.enabled
+    if (opts.startSec !== undefined) this.loopStartSec = Math.max(0, opts.startSec)
+    if (opts.endSec !== undefined) this.loopEndSec = Math.max(0, opts.endSec)
+
+    // Ensure start < end
+    if (this.loopStartSec >= this.loopEndSec) {
+      this.loopEnabled = false
+    }
+  }
+
+  /** Returns true if the loop is active. */
+  isLooping(): boolean {
+    return this.loopEnabled
+  }
+
+  /**
+   * Must be called once per animation frame while playing.
+   * Returns true if a loop-wrap occurred (so the caller can update UI immediately).
+   */
+  tickLoop(): boolean {
+    if (!this.loopEnabled || this.isLoopJumping) return false
+    const pos = this.getTime()
+    if (pos >= this.loopEndSec) {
+      this.isLoopJumping = true
+      this.seek(this.loopStartSec, { resume: true })
+      this.isLoopJumping = false
+      return true
+    }
+    return false
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Compute piece duration from the loaded notes (last note end).
+   * Returns 0 when no notes are loaded.
+   */
+  getDuration(): number {
+    if (this.notes.length === 0) return 0
+    let maxEnd = 0
+    for (const n of this.notes) {
+      const end = n.startTime + n.duration
+      if (end > maxEnd) maxEnd = end
+    }
+    return maxEnd
   }
 
   /**

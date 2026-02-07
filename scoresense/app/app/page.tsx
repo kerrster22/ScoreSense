@@ -394,7 +394,11 @@ export default function AppPage() {
 
   const handleLoopChange = useCallback((value: string) => {
     setLoopSelection(value)
-    if (value === "off") setCurrentLoop(null)
+    const engine = audioEngineRef.current
+    if (value === "off") {
+      setCurrentLoop(null)
+      engine.setLoop({ enabled: false })
+    }
   }, [])
 
   const handleHandChange = useCallback((value: string) => {
@@ -404,12 +408,27 @@ export default function AppPage() {
   const handleClearLoop = useCallback(() => {
     setCurrentLoop(null)
     setLoopSelection("off")
+    const engine = audioEngineRef.current
+    engine.setLoop({ enabled: false })
   }, [])
 
   const handlePracticeSection = useCallback((start: number, end: number) => {
     setCurrentLoop({ start, end })
     setLoopSelection("custom")
+    const engine = audioEngineRef.current
+    engine.setLoop({ enabled: true, startSec: start, endSec: end })
   }, [])
+
+  /**
+   * Seek to a specific position in the piece (seconds).
+   * If currently playing, playback continues from the new position.
+   * If paused, the visual position updates but stays paused.
+   */
+  const handleSeek = useCallback((seconds: number) => {
+    const engine = audioEngineRef.current
+    engine.seek(seconds, { resume: isPlaying })
+    setPlaybackTime(seconds)
+  }, [isPlaying])
 
   // Set notes to audio engine when they change
   useEffect(() => {
@@ -435,17 +454,20 @@ export default function AppPage() {
     const animate = () => {
       try {
         const engine = audioEngineRef.current
+
+        // Check loop wrap first (may seek back to loop start)
+        engine.tickLoop()
+
         const currentTime = engine.getTime()
         
         // Update playbackTime from audio engine (single source of truth)
         setPlaybackTime(currentTime)
 
-        // Stop if we've reached the end
-        if (currentTime >= playbackDuration) {
+        // Stop if we've reached the end (only when not looping)
+        if (!engine.isLooping() && currentTime >= playbackDuration) {
           engine.stop()
           setPlaybackTime(0)
           setIsPlaying(false)
-          console.log("Playback finished")
           return
         }
 
@@ -569,6 +591,7 @@ export default function AppPage() {
                 isComplete={isComplete}
                 isPlaying={isPlaying}
                 playbackTime={playbackTime}
+                playbackDuration={playbackDuration}
                 activeKeys={activeKeys}
                 tempo={tempo}
                 metronomeOn={metronomeOn}
@@ -584,6 +607,7 @@ export default function AppPage() {
                 onLoopChange={handleLoopChange}
                 onHandChange={handleHandChange}
                 onClearLoop={handleClearLoop}
+                onSeek={handleSeek}
                 onShowNoteNamesChange={setShowNoteNames}
                 onShowKeyLabelsChange={setShowKeyLabels}
                 onTestTone={handleTestTone}
