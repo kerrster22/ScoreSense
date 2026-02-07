@@ -21,7 +21,7 @@ import type { MeasureMapEntry, MusicXmlNoteEvent } from "./musicmxl"
 // Constants
 // ---------------------------------------------------------------------------
 
-const ALGO_VERSION = "1.0"
+export const ALGO_VERSION = "1.0"
 const MIN_SECTION_BARS = 2
 const MAX_SECTION_BARS = 16
 const DEFAULT_SECTION_BARS = 8
@@ -497,4 +497,4 @@ export function analyzePiece(
   return { segments, lessons, insights, algoVersion: ALGO_VERSION }
 }
 
-export { ALGO_VERSION }
+

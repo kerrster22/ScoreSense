@@ -8,7 +8,7 @@ import { TransportControls } from "./TransportControls"
 import { PracticeControls } from "./PracticeControls"
 import { VisualAidsToggles } from "./VisualAidsToggles"
 import { AudioControls } from "./AudioControls"
-import type { Note, PianoKey, LoopRange, LoopOption, HandOption } from "./types"
+import type { Note, PianoKey, LoopRange, LoopOption, HandOption, NamedLoop, HandAudioMode, HandVisualMode } from "./types"
 
 interface TutorialPlayerProps {
   // Data
@@ -41,6 +41,17 @@ interface TutorialPlayerProps {
   onShowNoteNamesChange: (value: boolean) => void
   onShowKeyLabelsChange: (value: boolean) => void
   onTestTone?: () => Promise<void>
+  // Enhanced practice controls
+  totalBars: number
+  onSetBarLoop: (startBar: number, endBar: number) => void
+  namedLoops: NamedLoop[]
+  onSaveLoop: (name: string) => void
+  onDeleteLoop: (loopId: string) => void
+  onSelectNamedLoop: (loop: NamedLoop) => void
+  handAudioMode: HandAudioMode
+  handVisualMode: HandVisualMode
+  onHandAudioModeChange: (mode: HandAudioMode) => void
+  onHandVisualModeChange: (mode: HandVisualMode) => void
 }
 
 export function TutorialPlayer({
@@ -71,6 +82,16 @@ export function TutorialPlayer({
   onShowNoteNamesChange,
   onShowKeyLabelsChange,
   onTestTone,
+  totalBars,
+  onSetBarLoop,
+  namedLoops,
+  onSaveLoop,
+  onDeleteLoop,
+  onSelectNamedLoop,
+  handAudioMode,
+  handVisualMode,
+  onHandAudioModeChange,
+  onHandVisualModeChange,
 }: TutorialPlayerProps) {
   // ---------------------------------------------------------------------------
   // Keyboard "Fit vs Scroll" + Zoom + Scroll sync for visualiser alignment
@@ -153,6 +174,16 @@ export function TutorialPlayer({
             handOptions={handOptions}
             onLoopChange={onLoopChange}
             onHandChange={onHandChange}
+            totalBars={totalBars}
+            onSetBarLoop={onSetBarLoop}
+            namedLoops={namedLoops}
+            onSaveLoop={onSaveLoop}
+            onDeleteLoop={onDeleteLoop}
+            onSelectNamedLoop={onSelectNamedLoop}
+            handAudioMode={handAudioMode}
+            handVisualMode={handVisualMode}
+            onHandAudioModeChange={onHandAudioModeChange}
+            onHandVisualModeChange={onHandVisualModeChange}
           />
 
           <VisualAidsToggles

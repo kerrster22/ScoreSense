@@ -543,6 +543,178 @@ export default function AppPage() {
   }, [playbackTime, handVisualMode, notesForPlayer])
 
   // -------------------------------------------------------------------------
+  // Analysis + Persistence
+  // -------------------------------------------------------------------------
+
+  // Compute piece hash and load persisted data when notes change
+  useEffect(() => {
+    if (notesForPlayer.length === 0 || notesForPlayer === MOCK_NOTES) return
+
+    const hash = computePieceHash(
+      notesForPlayer.map((n) => ({
+        midi: 0, // We use note name; stub midi
+        startTime: n.startTime,
+      }))
+    )
+    setPieceHash(hash)
+
+    // Load persisted named loops
+    const persisted = loadPieceData(hash)
+    setNamedLoops(persisted.namedLoops)
+
+    // Restore last position (only if not playing)
+    if (persisted.lastPositionSec > 0 && !isPlaying) {
+      setPlaybackTime(persisted.lastPositionSec)
+    }
+  }, [notesForPlayer])
+
+  // Run analysis when musicXml is ready (or use cached)
+  useEffect(() => {
+    if (musicXmlState.status !== "ready") return
+    if (!pieceHash) return
+
+    // Try cache first
+    const cached = getCachedAnalysis(pieceHash, ALGO_VERSION)
+    if (cached) {
+      setSegments(cached.segments)
+      setLessons(cached.lessons)
+      setPatternInsights(cached.insights)
+      return
+    }
+
+    // Run fresh analysis
+    const result = analyzePiece(musicXmlState.events as any, musicXmlState.measureMap)
+    setSegments(result.segments)
+    setLessons(result.lessons)
+    setPatternInsights(result.insights)
+
+    // Cache it
+    cacheAnalysis(pieceHash, ALGO_VERSION, result.segments, result.lessons, result.insights)
+  }, [musicXmlState, pieceHash])
+
+  // Periodically save playback position (every 2s while playing)
+  useEffect(() => {
+    if (!pieceHash || !isPlaying) return
+    const interval = setInterval(() => {
+      saveLastPosition(pieceHash, playbackTime)
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [pieceHash, isPlaying, playbackTime])
+
+  // -------------------------------------------------------------------------
+  // Measure map helpers
+  // -------------------------------------------------------------------------
+
+  const measureMap = musicXmlState.status === "ready" ? musicXmlState.measureMap : []
+  const totalBars = measureMap.length
+
+  /** Convert bar numbers to seconds using the measure map */
+  const barsToSeconds = useCallback(
+    (startBar: number, endBar: number): { startSec: number; endSec: number } | null => {
+      const startEntry = measureMap.find((m) => m.measure === startBar)
+      const endEntry = measureMap.find((m) => m.measure === endBar)
+      if (!startEntry || !endEntry) return null
+      return { startSec: startEntry.startSec, endSec: endEntry.endSec }
+    },
+    [measureMap]
+  )
+
+  // -------------------------------------------------------------------------
+  // Named loop handlers
+  // -------------------------------------------------------------------------
+
+  const handleSetBarLoop = useCallback(
+    (startBar: number, endBar: number) => {
+      const range = barsToSeconds(startBar, endBar)
+      if (!range) return
+      setCurrentLoop({ start: startBar, end: endBar })
+      setLoopSelection("custom")
+      const engine = audioEngineRef.current
+      engine.setLoop({ enabled: true, startSec: range.startSec, endSec: range.endSec })
+    },
+    [barsToSeconds]
+  )
+
+  const handleSaveNamedLoop = useCallback(
+    (name: string) => {
+      if (!pieceHash || !currentLoop) return
+      const range = barsToSeconds(currentLoop.start, currentLoop.end)
+      if (!range) return
+      const loop: NamedLoop = {
+        id: `loop-${Date.now()}`,
+        name,
+        startBar: currentLoop.start,
+        endBar: currentLoop.end,
+        startSec: range.startSec,
+        endSec: range.endSec,
+      }
+      const updated = addNamedLoop(pieceHash, loop)
+      setNamedLoops(updated.namedLoops)
+    },
+    [pieceHash, currentLoop, barsToSeconds]
+  )
+
+  const handleDeleteNamedLoop = useCallback(
+    (loopId: string) => {
+      if (!pieceHash) return
+      const updated = deleteNamedLoop(pieceHash, loopId)
+      setNamedLoops(updated.namedLoops)
+    },
+    [pieceHash]
+  )
+
+  const handleSelectNamedLoop = useCallback(
+    (loop: NamedLoop) => {
+      setCurrentLoop({ start: loop.startBar, end: loop.endBar })
+      setLoopSelection("custom")
+      const engine = audioEngineRef.current
+      engine.setLoop({ enabled: true, startSec: loop.startSec, endSec: loop.endSec })
+    },
+    []
+  )
+
+  // -------------------------------------------------------------------------
+  // Segment / Lesson navigation
+  // -------------------------------------------------------------------------
+
+  const handleSelectSegment = useCallback(
+    (segment: Segment) => {
+      setCurrentSegmentId(segment.id)
+      // Seek to start and optionally loop
+      const engine = audioEngineRef.current
+      engine.seek(segment.startSec, { resume: autoPlayOnSelect && isPlaying })
+      engine.setLoop({ enabled: true, startSec: segment.startSec, endSec: segment.endSec })
+      setCurrentLoop({ start: segment.startBar, end: segment.endBar })
+      setLoopSelection("custom")
+      setPlaybackTime(segment.startSec)
+
+      // Auto-play if enabled and not already playing
+      if (autoPlayOnSelect && !isPlaying) {
+        handlePlayPause()
+      }
+    },
+    [autoPlayOnSelect, isPlaying, handlePlayPause]
+  )
+
+  const handleNextSegment = useCallback(() => {
+    if (segments.length === 0) return
+    const currentIdx = segments.findIndex((s) => s.id === currentSegmentId)
+    const nextIdx = currentIdx < segments.length - 1 ? currentIdx + 1 : 0
+    handleSelectSegment(segments[nextIdx])
+  }, [segments, currentSegmentId, handleSelectSegment])
+
+  const handlePrevSegment = useCallback(() => {
+    if (segments.length === 0) return
+    const currentIdx = segments.findIndex((s) => s.id === currentSegmentId)
+    const prevIdx = currentIdx > 0 ? currentIdx - 1 : segments.length - 1
+    handleSelectSegment(segments[prevIdx])
+  }, [segments, currentSegmentId, handleSelectSegment])
+
+  const handleAutoPlayToggle = useCallback(() => {
+    setAutoPlayOnSelect((prev) => !prev)
+  }, [])
+
+  // -------------------------------------------------------------------------
   // Render
   // -------------------------------------------------------------------------
 
@@ -649,10 +821,33 @@ export default function AppPage() {
                 onShowNoteNamesChange={setShowNoteNames}
                 onShowKeyLabelsChange={setShowKeyLabels}
                 onTestTone={handleTestTone}
+                // New props for enhanced practice controls
+                totalBars={totalBars}
+                onSetBarLoop={handleSetBarLoop}
+                namedLoops={namedLoops}
+                onSaveLoop={handleSaveNamedLoop}
+                onDeleteLoop={handleDeleteNamedLoop}
+                onSelectNamedLoop={handleSelectNamedLoop}
+                handAudioMode={handAudioMode}
+                handVisualMode={handVisualMode}
+                onHandAudioModeChange={setHandAudioMode}
+                onHandVisualModeChange={setHandVisualMode}
+              />
+
+              <LessonsPanel
+                lessons={lessons}
+                segments={segments}
+                currentSegmentId={currentSegmentId}
+                isComplete={isComplete}
+                autoPlayOnSelect={autoPlayOnSelect}
+                onSelectSegment={handleSelectSegment}
+                onNextSegment={handleNextSegment}
+                onPrevSegment={handlePrevSegment}
+                onAutoPlayToggle={handleAutoPlayToggle}
               />
 
               <PatternInsights
-                insights={PATTERN_INSIGHTS}
+                insights={patternInsights.length > 0 ? patternInsights : FALLBACK_PATTERN_INSIGHTS}
                 isComplete={isComplete}
                 onPracticeSection={handlePracticeSection}
               />

@@ -12,11 +12,12 @@ interface PatternInsightsProps {
   onPracticeSection: (start: number, end: number) => void
 }
 
-const TYPE_ICONS = {
+const TYPE_ICONS: Record<string, typeof Copy> = {
   exact: Copy,
+  near: Copy,
   transposed: ArrowUpRight,
   "left-hand": Piano,
-} as const
+}
 
 export function PatternInsights({
   insights,
@@ -30,7 +31,7 @@ export function PatternInsights({
       </CardHeader>
       <CardContent className="space-y-3">
         {insights.map((insight) => {
-          const TypeIcon = TYPE_ICONS[insight.type]
+          const TypeIcon = TYPE_ICONS[insight.type] || Copy
 
           return (
             <div
