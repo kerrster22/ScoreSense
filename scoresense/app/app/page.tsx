@@ -9,6 +9,7 @@ import { UploadCard } from "./components/UploadCard"
 import { ConversionStatusCard } from "./components/ConversionStatusCard"
 import { TutorialPlayer } from "./components/TutorialPlayer"
 import { PatternInsights } from "./components/PatternInsights"
+import { LessonsPanel } from "./components/LessonsPanel"
 
 // Types
 import type {
@@ -20,6 +21,11 @@ import type {
   HandOption,
   PatternInsight,
   LoopRange,
+  NamedLoop,
+  Segment,
+  Lesson,
+  HandAudioMode,
+  HandVisualMode,
 } from "./components/types"
 
 // Hooks / utils
@@ -27,6 +33,17 @@ import { useMidi } from "./lib/useMidi"
 import { generateFullPianoKeys } from "./lib/piano"
 import { useMusicXml } from "./hooks/useMusicXml"
 import { getPianoAudioEngine, type PianoAudioEngineState } from "./lib/pianoAudioEngine"
+import { analyzePiece, ALGO_VERSION } from "./lib/practiceAnalysis"
+import {
+  computePieceHash,
+  loadPieceData,
+  savePieceData,
+  addNamedLoop,
+  deleteNamedLoop,
+  saveLastPosition,
+  getCachedAnalysis,
+  cacheAnalysis,
+} from "./lib/persistence"
 
 // ============================================================================
 // Constants / Mock Data
@@ -73,7 +90,7 @@ const HAND_OPTIONS: HandOption[] = [
   { value: "left", label: "Left" },
 ]
 
-const PATTERN_INSIGHTS: PatternInsight[] = [
+const FALLBACK_PATTERN_INSIGHTS: PatternInsight[] = [
   {
     id: 1,
     text: "This section repeats exactly - master it once, play it twice",
@@ -134,6 +151,21 @@ export default function AppPage() {
   // Visual aids
   const [showNoteNames, setShowNoteNames] = useState(true)
   const [showKeyLabels, setShowKeyLabels] = useState(false)
+
+  // Hand audio/visual modes
+  const [handAudioMode, setHandAudioMode] = useState<HandAudioMode>("both")
+  const [handVisualMode, setHandVisualMode] = useState<HandVisualMode>("both")
+
+  // Analysis & lessons state
+  const [segments, setSegments] = useState<Segment[]>([])
+  const [lessons, setLessons] = useState<Lesson[]>([])
+  const [patternInsights, setPatternInsights] = useState<PatternInsight[]>([])
+  const [currentSegmentId, setCurrentSegmentId] = useState<string | null>(null)
+  const [autoPlayOnSelect, setAutoPlayOnSelect] = useState(true)
+
+  // Named loops & persistence
+  const [namedLoops, setNamedLoops] = useState<NamedLoop[]>([])
+  const [pieceHash, setPieceHash] = useState<string | null>(null)
 
   // Animation state
   const [playbackTime, setPlaybackTime] = useState(0)
@@ -430,16 +462,20 @@ export default function AppPage() {
     setPlaybackTime(seconds)
   }, [isPlaying])
 
-  // Set notes to audio engine when they change
+  // Set notes to audio engine based on handAudioMode
   useEffect(() => {
     const engine = audioEngineRef.current
     const filteredNotes = notesForPlayer.filter((note) => {
-      if (handSelection === "right" && note.hand === "left") return false
-      if (handSelection === "left" && note.hand === "right") return false
-      return true
+      switch (handAudioMode) {
+        case "right-only": return note.hand === "right"
+        case "left-only": return note.hand === "left"
+        case "mute-right": return note.hand !== "right"
+        case "mute-left": return note.hand !== "left"
+        default: return true
+      }
     })
     engine.setNotes(filteredNotes)
-  }, [notesForPlayer, handSelection])
+  }, [notesForPlayer, handAudioMode])
 
   // Playback animation effect: sync playbackTime with audio engine
   useEffect(() => {
@@ -489,12 +525,14 @@ export default function AppPage() {
     }
   }, [isPlaying, isComplete, playbackDuration])
 
-  // Update active keys based on playback time
+  // Update active keys based on playback time and visual hand mode
   useEffect(() => {
     const filteredNotes = notesForPlayer.filter((note) => {
-      if (handSelection === "right" && note.hand === "left") return false
-      if (handSelection === "left" && note.hand === "right") return false
-      return true
+      switch (handVisualMode) {
+        case "right-only": return note.hand === "right"
+        case "left-only": return note.hand === "left"
+        default: return true
+      }
     })
 
     const active = filteredNotes
@@ -502,7 +540,7 @@ export default function AppPage() {
       .map((note) => note.note)
 
     setActiveKeys(active)
-  }, [playbackTime, handSelection, notesForPlayer])
+  }, [playbackTime, handVisualMode, notesForPlayer])
 
   // -------------------------------------------------------------------------
   // Render
