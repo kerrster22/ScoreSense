@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@tonejs/midi": "^2.0.28",
+    "fast-xml-parser": "^5.3.4",
+    "jszip": "^3.10.1"
+  }
+}
