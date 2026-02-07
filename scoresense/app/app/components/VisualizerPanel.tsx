@@ -1,25 +1,26 @@
 "use client"
 
-import React, { useEffect, useMemo, useRef } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
+import { Maximize2, Minimize2 } from "lucide-react"
 import type { Note, PianoKey, LoopRange } from "./types"
 
 // =============================================================================
-// CONFIG – single tuning object
+// CONFIG
 // =============================================================================
 
 const VFX_CONFIG = {
   /** "bloom" | "pulseTrail" | "keyGlowSparks" */
   hitEffectStyle: "bloom" as "bloom" | "pulseTrail" | "keyGlowSparks",
 
-  // Bloom fade timings (ms)
-  attackMs: 40,
-  releaseMs: 400,
-  peakAlpha: 0.92,
+  // Bloom envelope (ms)
+  attackMs: 35,
+  releaseMs: 450,
+  peakAlpha: 0.88,
 
   // Particles
-  particleCountScale: 1.0,
   particleBaseCount: 5,
+  particleCountScale: 1.0,
   particleLifetimeMs: 500,
   particleSpeed: 0.6,
 
@@ -28,10 +29,10 @@ const VFX_CONFIG = {
   glowSpriteSize: 64,
 
   // Note colors
-  rhColor: { r: 236, g: 72, b: 153 },   // pink/magenta
-  rhGlow: { r: 168, g: 85, b: 247 },     // purple glow
-  lhColor: { r: 99, g: 102, b: 241 },    // indigo/blue
-  lhGlow: { r: 129, g: 140, b: 248 },    // lighter blue glow
+  rhColor: { r: 236, g: 72, b: 153 },
+  rhGlow: { r: 168, g: 85, b: 247 },
+  lhColor: { r: 99, g: 102, b: 241 },
+  lhGlow: { r: 129, g: 140, b: 248 },
 } as const
 
 // =============================================================================
@@ -80,22 +81,24 @@ interface Particle {
 }
 
 // =============================================================================
-// CONSTANTS
+// LAYOUT CONSTANTS
 // =============================================================================
 
-const VISUALIZER_HEIGHT = 320
+const NORMAL_HEIGHT = 320
+const FULLSCREEN_BOTTOM_PAD = 120 // room for keyboard below
 const LOOKAHEAD_SEC = 6
+const LOOKAHEAD_SEC_FS = 10 // more lead time in fullscreen
 const LOOKBEHIND_SEC = 1.25
 const BASE_PPS = 120
 const MIN_NOTE_PX = 26
-const HIT_EARLY = 0.03
-const HIT_LATE = 0.06
+const HIT_EARLY = 0.04
+const HIT_LATE = 0.08
 
 const MAX_HIT_EFFECTS = 64
 const MAX_PARTICLES = 120
 
 // =============================================================================
-// EASING & HELPERS
+// EASING
 // =============================================================================
 
 function easeOutCubic(t: number): number {
@@ -128,6 +131,10 @@ function roundRect(
   ctx.closePath()
 }
 
+// =============================================================================
+// BINARY SEARCH (for note culling)
+// =============================================================================
+
 function binarySearchFirstIndex(notes: Note[], time: number) {
   let lo = 0
   let hi = notes.length
@@ -150,29 +157,64 @@ function findStartIndexIncludingSustains(notes: Note[], windowStart: number) {
 }
 
 // =============================================================================
-// CACHED GLOW SPRITE FACTORY
+// CACHED GLOW SPRITE
 // =============================================================================
 
-function createGlowSprite(
-  size: number,
-  r: number,
-  g: number,
-  b: number
-): HTMLCanvasElement {
+function createGlowSprite(size: number, r: number, g: number, b: number): HTMLCanvasElement {
   const c = document.createElement("canvas")
   c.width = size
   c.height = size
   const ctx = c.getContext("2d")!
-  const grad = ctx.createRadialGradient(
-    size / 2, size / 2, 0,
-    size / 2, size / 2, size / 2
-  )
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
   grad.addColorStop(0, `rgba(${r},${g},${b},0.7)`)
   grad.addColorStop(0.4, `rgba(${r},${g},${b},0.25)`)
   grad.addColorStop(1, `rgba(${r},${g},${b},0)`)
   ctx.fillStyle = grad
   ctx.fillRect(0, 0, size, size)
   return c
+}
+
+// =============================================================================
+// CACHED BACKGROUND SPRITE (painted once per resize, not every frame)
+// =============================================================================
+
+function paintBackgroundSprite(canvas: HTMLCanvasElement, w: number, h: number) {
+  const ctx = canvas.getContext("2d")!
+  canvas.width = w
+  canvas.height = h
+
+  // Deep dark base
+  ctx.fillStyle = "#0a0a0f"
+  ctx.fillRect(0, 0, w, h)
+
+  // Subtle gradient overlay
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, h)
+  bgGrad.addColorStop(0, "rgba(20, 10, 40, 0.3)")
+  bgGrad.addColorStop(0.5, "rgba(5, 5, 15, 0.0)")
+  bgGrad.addColorStop(1, "rgba(10, 5, 30, 0.2)")
+  ctx.fillStyle = bgGrad
+  ctx.fillRect(0, 0, w, h)
+
+  // Vignette
+  const vigGrad = ctx.createRadialGradient(
+    w / 2, h / 2, Math.min(w, h) * 0.3,
+    w / 2, h / 2, Math.max(w, h) * 0.7
+  )
+  vigGrad.addColorStop(0, "rgba(0,0,0,0)")
+  vigGrad.addColorStop(1, "rgba(0,0,0,0.4)")
+  ctx.fillStyle = vigGrad
+  ctx.fillRect(0, 0, w, h)
+
+  // Grid lines
+  ctx.strokeStyle = "rgba(255,255,255,0.035)"
+  ctx.lineWidth = 1
+  for (let i = 1; i <= 8; i++) {
+    const y = (h * i) / 8
+    ctx.beginPath()
+    ctx.moveTo(0, y)
+    ctx.lineTo(w, y)
+    ctx.stroke()
+  }
 }
 
 // =============================================================================
@@ -183,23 +225,14 @@ function createParticlePool(count: number): Particle[] {
   const pool: Particle[] = []
   for (let i = 0; i < count; i++) {
     pool.push({
-      active: false,
-      x: 0, y: 0, vx: 0, vy: 0,
-      alpha: 0, startMs: 0, lifetimeMs: 0, size: 0,
-      isRight: true,
+      active: false, x: 0, y: 0, vx: 0, vy: 0,
+      alpha: 0, startMs: 0, lifetimeMs: 0, size: 0, isRight: true,
     })
   }
   return pool
 }
 
-function emitParticles(
-  pool: Particle[],
-  x: number,
-  y: number,
-  w: number,
-  isRight: boolean,
-  nowMs: number
-) {
+function emitParticles(pool: Particle[], x: number, y: number, w: number, isRight: boolean, nowMs: number) {
   const count = Math.round(VFX_CONFIG.particleBaseCount * VFX_CONFIG.particleCountScale)
   let spawned = 0
   for (let i = 0; i < pool.length && spawned < count; i++) {
@@ -237,16 +270,7 @@ function createHitEffectPool(count: number): HitEffect[] {
   return pool
 }
 
-function spawnHitEffect(
-  pool: HitEffect[],
-  noteId: number,
-  x: number,
-  y: number,
-  w: number,
-  isRight: boolean,
-  nowMs: number
-) {
-  // Don't double-spawn for same note
+function spawnHitEffect(pool: HitEffect[], noteId: number, x: number, y: number, w: number, isRight: boolean, nowMs: number) {
   for (const e of pool) {
     if (e.noteId === noteId && e.phase !== "done") return
   }
@@ -307,26 +331,36 @@ export function VisualizerPanel({
   keyboardScrollLeft = 0,
   keyboardViewportWidth,
 }: VisualizerPanelProps) {
+  // ---- Refs: stable rAF loop, no restarts on fast-changing values ----
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const containerRef = useRef<HTMLDivElement | null>(null)
   const rafRef = useRef<number | null>(null)
 
-  // Store playbackTime in a ref so the rAF loop never restarts on time change.
-  // The draw loop reads .current each frame instead of depending on state.
   const playbackTimeRef = useRef(playbackTime)
   playbackTimeRef.current = playbackTime
-
-  // Also store other frequently-changing but non-structural values as refs
   const tempoRef = useRef(tempo)
   tempoRef.current = tempo
   const showNoteNamesRef = useRef(showNoteNames)
   showNoteNamesRef.current = showNoteNames
+  const scrollLeftRef = useRef(keyboardScrollLeft)
+  scrollLeftRef.current = keyboardScrollLeft
+  const viewportWidthRef = useRef(keyboardViewportWidth)
+  viewportWidthRef.current = keyboardViewportWidth
 
-  // Persistent refs for VFX state (never cause re-renders)
+  // VFX pools (never cause re-renders)
   const hitPoolRef = useRef<HitEffect[]>(createHitEffectPool(MAX_HIT_EFFECTS))
   const particlePoolRef = useRef<Particle[]>(createParticlePool(MAX_PARTICLES))
   const glowSpritesRef = useRef<{ rh: HTMLCanvasElement; lh: HTMLCanvasElement } | null>(null)
   const prevHitSetRef = useRef<Set<number>>(new Set())
 
+  // Cached background sprite (repainted only on resize)
+  const bgSpriteRef = useRef<HTMLCanvasElement | null>(null)
+  const bgSizeRef = useRef({ w: 0, h: 0 })
+
+  // Fullscreen state
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  // ---- Derived data (only recompute on structural changes) ----
   const filteredNotes: Note[] = useMemo(() => {
     const base =
       handSelection === "both"
@@ -369,26 +403,26 @@ export function VisualizerPanel({
     return map
   }, [pianoKeys, keyboardMode, keyboardZoom])
 
-  // Create glow sprites once
+  // ---- Glow sprites (once) ----
   useEffect(() => {
     const s = VFX_CONFIG.glowSpriteSize
     glowSpritesRef.current = {
       rh: createGlowSprite(s, VFX_CONFIG.rhGlow.r, VFX_CONFIG.rhGlow.g, VFX_CONFIG.rhGlow.b),
       lh: createGlowSprite(s, VFX_CONFIG.lhGlow.r, VFX_CONFIG.lhGlow.g, VFX_CONFIG.lhGlow.b),
     }
+    bgSpriteRef.current = document.createElement("canvas")
   }, [])
 
-  // HiDPI canvas sizing
+  // ---- HiDPI canvas sizing via ResizeObserver ----
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas) return
-    const parent = canvas.parentElement
-    if (!parent) return
+    const container = containerRef.current
+    if (!canvas || !container) return
 
     const resize = () => {
       const dpr = window.devicePixelRatio || 1
-      const w = parent.clientWidth
-      const h = VISUALIZER_HEIGHT
+      const w = container.clientWidth
+      const h = container.clientHeight
 
       canvas.width = Math.floor(w * dpr)
       canvas.height = Math.floor(h * dpr)
@@ -397,22 +431,48 @@ export function VisualizerPanel({
 
       const ctx = canvas.getContext("2d")
       if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+      // Repaint background sprite on resize
+      if (bgSpriteRef.current) {
+        paintBackgroundSprite(bgSpriteRef.current, w, h)
+        bgSizeRef.current = { w, h }
+      }
     }
 
     resize()
     const ro = new ResizeObserver(resize)
-    ro.observe(parent)
+    ro.observe(container)
     return () => ro.disconnect()
+  }, [isFullscreen])
+
+  // ---- Fullscreen API ----
+  const toggleFullscreen = useCallback(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    if (!document.fullscreenElement) {
+      el.requestFullscreen().catch(() => {})
+    } else {
+      document.exitFullscreen().catch(() => {})
+    }
   }, [])
 
-  // Clear all VFX on seek / stop / loop change
+  useEffect(() => {
+    const handler = () => {
+      setIsFullscreen(!!document.fullscreenElement)
+    }
+    document.addEventListener("fullscreenchange", handler)
+    return () => document.removeEventListener("fullscreenchange", handler)
+  }, [])
+
+  // ---- Clear VFX on loop change / seek ----
   useEffect(() => {
     for (const e of hitPoolRef.current) e.phase = "done"
     for (const p of particlePoolRef.current) p.active = false
     prevHitSetRef.current.clear()
   }, [currentLoop])
 
-  // Main draw loop
+  // ---- Main draw loop (stable, no playbackTime in deps) ----
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -421,53 +481,39 @@ export function VisualizerPanel({
 
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
 
+    // Pre-compute a fixed label font (avoid per-note font-sizing loop)
+    const labelFont = "700 11px ui-sans-serif,system-ui,-apple-system"
+
     const draw = () => {
       const w = canvas.clientWidth
-      const h = VISUALIZER_HEIGHT
+      const h = canvas.clientHeight || NORMAL_HEIGHT
       const nowMs = performance.now()
-      const currentPlaybackTime = playbackTimeRef.current
-      const currentTempo = tempoRef.current
-      const currentShowNoteNames = showNoteNamesRef.current
+      const curTime = playbackTimeRef.current
+      const curTempo = tempoRef.current
+      const curShowNames = showNoteNamesRef.current
+      const curScrollLeft = scrollLeftRef.current
+      const curViewportW = viewportWidthRef.current
 
       ctx.clearRect(0, 0, w, h)
 
-      // =====================================================================
-      // PASS 1: Background – deep black with subtle gradient + vignette
-      // =====================================================================
-      ctx.fillStyle = "#0a0a0f"
-      ctx.fillRect(0, 0, w, h)
-
-      const bgGrad = ctx.createLinearGradient(0, 0, 0, h)
-      bgGrad.addColorStop(0, "rgba(20, 10, 40, 0.3)")
-      bgGrad.addColorStop(0.5, "rgba(5, 5, 15, 0.0)")
-      bgGrad.addColorStop(1, "rgba(10, 5, 30, 0.2)")
-      ctx.fillStyle = bgGrad
-      ctx.fillRect(0, 0, w, h)
-
-      // Vignette (radial)
-      const vigGrad = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.3, w / 2, h / 2, Math.max(w, h) * 0.7)
-      vigGrad.addColorStop(0, "rgba(0,0,0,0)")
-      vigGrad.addColorStop(1, "rgba(0,0,0,0.4)")
-      ctx.fillStyle = vigGrad
-      ctx.fillRect(0, 0, w, h)
-
-      // Subtle grid lines
-      ctx.strokeStyle = "rgba(255,255,255,0.035)"
-      ctx.lineWidth = 1
-      for (let i = 1; i <= 8; i++) {
-        const y = (h * i) / 8
-        ctx.beginPath()
-        ctx.moveTo(0, y)
-        ctx.lineTo(w, y)
-        ctx.stroke()
+      // =================================================================
+      // PASS 1: Background (cached offscreen sprite -- zero gradient work)
+      // =================================================================
+      const bgSprite = bgSpriteRef.current
+      if (bgSprite && bgSizeRef.current.w === w && bgSizeRef.current.h === h) {
+        ctx.drawImage(bgSprite, 0, 0)
+      } else {
+        // Fallback: solid fill (should rarely hit after first frame)
+        ctx.fillStyle = "#0a0a0f"
+        ctx.fillRect(0, 0, w, h)
       }
 
-      // =====================================================================
-      // PASS 2: Strike line – thin, tasteful glow
-      // =====================================================================
+      // =================================================================
+      // PASS 2: Strike line
+      // =================================================================
       const hitLineY = h - 28
 
-      // Soft glow behind strike line
+      // Soft glow (cached sprite would be overkill for 1 gradient)
       const strikeGlow = ctx.createLinearGradient(0, hitLineY - 20, 0, hitLineY + 20)
       strikeGlow.addColorStop(0, "rgba(168,85,247,0)")
       strikeGlow.addColorStop(0.5, "rgba(168,85,247,0.08)")
@@ -475,7 +521,6 @@ export function VisualizerPanel({
       ctx.fillStyle = strikeGlow
       ctx.fillRect(0, hitLineY - 20, w, 40)
 
-      // The line itself
       ctx.save()
       ctx.strokeStyle = "rgba(255,255,255,0.15)"
       ctx.lineWidth = 1.5
@@ -485,9 +530,9 @@ export function VisualizerPanel({
       ctx.stroke()
       ctx.restore()
 
-      // =====================================================================
+      // =================================================================
       // Empty state
-      // =====================================================================
+      // =================================================================
       if (!isComplete) {
         ctx.globalAlpha = 0.12
         const demo = filteredNotes.slice(0, 10)
@@ -501,17 +546,16 @@ export function VisualizerPanel({
             x = (pos.left / 100) * w
             ww = (pos.width / 100) * w
           } else {
-            x = pos.left - keyboardScrollLeft
+            x = pos.left - curScrollLeft
             ww = pos.width
           }
 
-          const y = clamp(40 + n.startTime * 28, 10, h - 60)
+          const yy = clamp(40 + n.startTime * 28, 10, h - 60)
           const hh = clamp(n.duration * 70, MIN_NOTE_PX, 120)
-
           const isRight = n.hand === "right"
           const c = isRight ? VFX_CONFIG.rhColor : VFX_CONFIG.lhColor
           ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.5)`
-          roundRect(ctx, x, y, ww, hh, 8)
+          roundRect(ctx, x, yy, ww, hh, 8)
           ctx.fill()
         }
         ctx.globalAlpha = 1
@@ -532,14 +576,16 @@ export function VisualizerPanel({
         return
       }
 
-      // =====================================================================
-      // PASS 3: Notes – neon bars with inner gradient and outer glow
-      // =====================================================================
-      const pps = BASE_PPS
-      const windowStart = currentPlaybackTime - LOOKBEHIND_SEC
-      const windowEnd = currentPlaybackTime + LOOKAHEAD_SEC
+      // =================================================================
+      // PASS 3: Notes
+      // =================================================================
+      const fsScale = isFullscreen ? 1.15 : 1.0  // slightly wider bars in fullscreen
+      const lookahead = isFullscreen ? LOOKAHEAD_SEC_FS : LOOKAHEAD_SEC
+      const pps = BASE_PPS * (isFullscreen ? 0.85 : 1.0) // slower fall in FS = more lead time
+      const windowStart = curTime - LOOKBEHIND_SEC
+      const windowEnd = curTime + lookahead
       const startIdx = findStartIndexIncludingSustains(filteredNotes, windowStart)
-      const viewW = keyboardViewportWidth ?? w
+      const viewW = curViewportW ?? w
 
       const currentHitSet = new Set<number>()
       const glowSprites = glowSpritesRef.current
@@ -552,7 +598,7 @@ export function VisualizerPanel({
         if (!pos) continue
 
         const noteHeight = Math.max(MIN_NOTE_PX, n.duration * pps)
-        const y = hitLineY - (n.startTime - currentPlaybackTime) * pps - noteHeight
+        const y = hitLineY - (n.startTime - curTime) * pps - noteHeight
         if (y > h || y + noteHeight < 0) continue
 
         let x = 0
@@ -561,46 +607,42 @@ export function VisualizerPanel({
           x = (pos.left / 100) * w
           wwRaw = (pos.width / 100) * w
         } else {
-          x = pos.left - keyboardScrollLeft
+          x = pos.left - curScrollLeft
           wwRaw = pos.width
           if (x + wwRaw < 0 || x > viewW) continue
         }
 
         const widen = pos.isBlack ? 1.15 : 1.08
-        const ww = clamp(wwRaw * widen, 8, wwRaw * 1.25)
+        const ww = clamp(wwRaw * widen * fsScale, 8, wwRaw * 1.3)
         const xCentered = x - (ww - wwRaw) / 2
 
         const isRight = n.hand === "right"
         const color = isRight ? VFX_CONFIG.rhColor : VFX_CONFIG.lhColor
         const glow = isRight ? VFX_CONFIG.rhGlow : VFX_CONFIG.lhGlow
 
-        // --- Smooth proximity-based glow (replaces binary isHit/isSustained) ---
-        // hitProximity ramps 0..1..0 as note approaches and passes the hit line
-        const distToHit = currentPlaybackTime - n.startTime
-        const approachT = clamp(1 - Math.abs(distToHit) / 0.2, 0, 1) // 200ms ramp
+        // ---- Smooth proximity envelope (organic fade, no binary snap) ----
+        const distToHit = curTime - n.startTime
+        // Approach ramp: 0 far away -> 1 at hit line (300ms window)
+        const approachT = clamp(1 - Math.abs(distToHit) / 0.3, 0, 1)
         const hitProximity = easeOutCubic(approachT)
 
         const isSustained = distToHit >= 0 && distToHit < n.duration
-        // sustainFade: 1 at start, fades to 0.3 over the note duration
         const sustainFade = isSustained
           ? 1 - easeOutCubic(clamp(distToHit / Math.max(n.duration, 0.01), 0, 1)) * 0.7
           : 0
 
         const isHit = distToHit >= -HIT_EARLY && distToHit < HIT_LATE
 
-        // Track hit for bloom spawn (only once per note-on)
+        // Spawn bloom (once per note-on)
         if (isHit) {
           currentHitSet.add(n.id)
           if (!prevHitSetRef.current.has(n.id)) {
-            spawnHitEffect(
-              hitPoolRef.current, n.id,
-              xCentered, hitLineY, ww, isRight, nowMs
-            )
+            spawnHitEffect(hitPoolRef.current, n.id, xCentered, hitLineY, ww, isRight, nowMs)
             emitParticles(particlePoolRef.current, xCentered, hitLineY, ww, isRight, nowMs)
           }
         }
 
-        // --- Outer glow via cached sprite (smooth fade, no shadowBlur) ---
+        // ---- Outer glow (cached sprite, no shadowBlur) ----
         const glowIntensity = Math.max(hitProximity * 0.5, sustainFade * 0.25)
         if (glowSprites && glowIntensity > 0.01) {
           const sprite = isRight ? glowSprites.rh : glowSprites.lh
@@ -615,17 +657,16 @@ export function VisualizerPanel({
             sprite,
             xCentered - (glowW - ww) / 2,
             y + noteHeight / 2 - glowH / 2,
-            glowW,
-            glowH
+            glowW, glowH
           )
           ctx.restore()
         }
 
-        // --- Note bar: smooth alpha based on proximity ---
+        // ---- Note bar (smooth alpha) ----
         ctx.save()
-        const baseAlpha = 0.55 + hitProximity * 0.40 + sustainFade * 0.20
+        const baseAlpha = 0.50 + hitProximity * 0.42 + sustainFade * 0.20
 
-        // Only create gradient for bright notes; use solid fill for distant ones
+        // Only create gradient for actively-glowing notes
         if (hitProximity > 0.05 || sustainFade > 0.05) {
           const grad = ctx.createLinearGradient(xCentered, y, xCentered, y + noteHeight)
           grad.addColorStop(0, `rgba(${color.r},${color.g},${color.b},${baseAlpha})`)
@@ -639,8 +680,8 @@ export function VisualizerPanel({
         roundRect(ctx, xCentered, y, ww, noteHeight, 8)
         ctx.fill()
 
-        // Top edge shine (smooth)
-        const shineAlpha = 0.06 + hitProximity * 0.20
+        // Top shine (smooth)
+        const shineAlpha = 0.05 + hitProximity * 0.18
         const shine = ctx.createLinearGradient(xCentered, y, xCentered, y + 6)
         shine.addColorStop(0, `rgba(255,255,255,${shineAlpha})`)
         shine.addColorStop(1, "rgba(255,255,255,0)")
@@ -649,50 +690,34 @@ export function VisualizerPanel({
         ctx.fill()
 
         // Outline (smooth)
-        const outlineAlpha = 0.04 + hitProximity * 0.16
+        const outlineAlpha = 0.03 + hitProximity * 0.14
         ctx.strokeStyle = `rgba(255,255,255,${outlineAlpha})`
         ctx.lineWidth = 1
         roundRect(ctx, xCentered, y, ww, noteHeight, 8)
         ctx.stroke()
 
-        // Note label
-        if (currentShowNoteNames) {
-          const labelAlpha = currentTempo > 80 ? 0.55 : 0.9
+        // Note label (fixed font -- no per-note sizing loop)
+        if (curShowNames && ww > 16 && noteHeight > 20) {
+          const labelAlpha = curTempo > 80 ? 0.50 : 0.85
           ctx.globalAlpha = labelAlpha
-
-          const label = n.note
-          const padding = 6
-          const maxTextWidth = ww - padding * 2
-
-          let fontSize = Math.min(13, Math.max(10, noteHeight / 3))
+          ctx.font = labelFont
           ctx.textBaseline = "middle"
           ctx.textAlign = "center"
-
-          while (fontSize >= 9) {
-            ctx.font = `700 ${Math.floor(fontSize)}px ui-sans-serif, system-ui, -apple-system`
-            if (ctx.measureText(label).width <= maxTextWidth) break
-            fontSize -= 1
-          }
-
-          if (fontSize >= 9 && maxTextWidth > 10) {
-            ctx.fillStyle = "rgba(0,0,0,0.5)"
-            ctx.fillText(label, xCentered + ww / 2 + 0.6, y + noteHeight / 2 + 0.6)
-            ctx.fillStyle = "rgba(255,255,255,0.92)"
-            ctx.fillText(label, xCentered + ww / 2, y + noteHeight / 2)
-          }
-
+          ctx.fillStyle = "rgba(0,0,0,0.45)"
+          ctx.fillText(n.note, xCentered + ww / 2 + 0.5, y + noteHeight / 2 + 0.5)
+          ctx.fillStyle = "rgba(255,255,255,0.90)"
+          ctx.fillText(n.note, xCentered + ww / 2, y + noteHeight / 2)
           ctx.globalAlpha = 1
         }
 
         ctx.restore()
       }
 
-      // Update previous hit set
       prevHitSetRef.current = currentHitSet
 
-      // =====================================================================
-      // PASS 4: Bloom fade hit effects
-      // =====================================================================
+      // =================================================================
+      // PASS 4: Bloom hit effects
+      // =================================================================
       ctx.save()
       ctx.globalCompositeOperation = "lighter"
 
@@ -708,23 +733,20 @@ export function VisualizerPanel({
         const c = effect.isRight ? VFX_CONFIG.rhGlow : VFX_CONFIG.lhGlow
 
         if (VFX_CONFIG.hitEffectStyle === "bloom" || VFX_CONFIG.hitEffectStyle === "keyGlowSparks") {
-          // Bloom: soft radial glow at hit point
           if (glowSprites) {
             const sprite = effect.isRight ? glowSprites.rh : glowSprites.lh
             const size = effect.w * 4
-            ctx.globalAlpha = alpha * 0.8
+            ctx.globalAlpha = alpha * 0.75
             ctx.drawImage(
               sprite,
               effect.x - (size - effect.w) / 2,
               effect.y - size / 2,
-              size,
-              size
+              size, size
             )
           }
         }
 
         if (VFX_CONFIG.hitEffectStyle === "pulseTrail") {
-          // Pulse ring expanding outward
           const elapsed = nowMs - effect.startMs
           const progress = clamp(elapsed / (VFX_CONFIG.attackMs + VFX_CONFIG.releaseMs), 0, 1)
           const ringRadius = effect.w * 0.5 + progress * effect.w * 1.5
@@ -740,9 +762,9 @@ export function VisualizerPanel({
 
       ctx.restore()
 
-      // =====================================================================
-      // PASS 5: Particles – micro sparks, additive blending
-      // =====================================================================
+      // =================================================================
+      // PASS 5: Particles
+      // =================================================================
       ctx.save()
       ctx.globalCompositeOperation = "lighter"
 
@@ -758,10 +780,9 @@ export function VisualizerPanel({
         const lifeT = elapsed / p.lifetimeMs
         const fadeAlpha = p.alpha * (1 - easeOutCubic(lifeT))
 
-        // Update position
         p.x += p.vx
         p.y += p.vy
-        p.vy -= 0.01 // gentle upward drift
+        p.vy -= 0.01
 
         const c = p.isRight ? VFX_CONFIG.rhGlow : VFX_CONFIG.lhGlow
 
@@ -774,9 +795,9 @@ export function VisualizerPanel({
 
       ctx.restore()
 
-      // =====================================================================
+      // =================================================================
       // Continue loop
-      // =====================================================================
+      // =================================================================
       rafRef.current = requestAnimationFrame(draw)
     }
 
@@ -785,25 +806,43 @@ export function VisualizerPanel({
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       rafRef.current = null
     }
-  }, [
-    isComplete,
-    filteredNotes,
-    keyPositions,
-    keyboardMode,
-    keyboardZoom,
-    keyboardScrollLeft,
-    keyboardViewportWidth,
-  ])
+  }, [isComplete, filteredNotes, keyPositions, keyboardMode, isFullscreen])
+  // ^^^ Only structural deps -- all fast-changing values read from refs
 
   return (
-    <div className="relative h-80 overflow-hidden" style={{ backgroundColor: "#0a0a0f" }}>
+    <div
+      ref={containerRef}
+      className="relative overflow-hidden"
+      style={{
+        backgroundColor: "#0a0a0f",
+        height: isFullscreen ? "100vh" : `${NORMAL_HEIGHT}px`,
+      }}
+    >
       <canvas ref={canvasRef} className="absolute inset-0" />
 
+      {/* Fullscreen toggle */}
+      <button
+        type="button"
+        onClick={toggleFullscreen}
+        className="absolute top-2 left-2 z-10 flex items-center justify-center rounded-lg bg-background/50 p-2 text-foreground/70 backdrop-blur-sm transition-colors hover:bg-background/70 hover:text-foreground"
+        aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+      >
+        {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+      </button>
+
       {currentLoop && (
-        <div className="absolute top-2 right-2">
+        <div className="absolute top-2 right-2 z-10">
           <Badge variant="secondary" className="text-xs">
             {'Looping bars '}{currentLoop.start}{'-'}{currentLoop.end}
           </Badge>
+        </div>
+      )}
+
+      {isFullscreen && (
+        <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2">
+          <span className="rounded-md bg-background/40 px-3 py-1 text-xs text-foreground/50 backdrop-blur-sm">
+            Press ESC to exit fullscreen
+          </span>
         </div>
       )}
     </div>

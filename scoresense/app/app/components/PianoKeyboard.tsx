@@ -171,7 +171,7 @@ export function PianoKeyboard({
                   {/* Pulse ring (feels more “alive”) */}
                   {isActive && (
                     <div className="pointer-events-none absolute inset-0">
-                      <div className="absolute inset-1 rounded-lg ring-2 ring-background/25 animate-[pulse_0.6s_ease-out_1]" />
+                      <div className="absolute inset-1 rounded-lg ring-1 ring-background/10 transition-opacity duration-500 ease-out" />
                     </div>
                   )}
 
