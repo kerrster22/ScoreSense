@@ -20,6 +20,7 @@ interface TutorialPlayerProps {
   isComplete: boolean
   isPlaying: boolean
   playbackTime: number
+  playbackDuration: number
   activeKeys: string[]
   tempo: number
   metronomeOn: boolean
@@ -36,6 +37,7 @@ interface TutorialPlayerProps {
   onLoopChange: (value: string) => void
   onHandChange: (value: string) => void
   onClearLoop: () => void
+  onSeek: (seconds: number) => void
   onShowNoteNamesChange: (value: boolean) => void
   onShowKeyLabelsChange: (value: boolean) => void
   onTestTone?: () => Promise<void>
@@ -49,6 +51,7 @@ export function TutorialPlayer({
   isComplete,
   isPlaying,
   playbackTime,
+  playbackDuration,
   activeKeys,
   tempo,
   metronomeOn,
@@ -64,6 +67,7 @@ export function TutorialPlayer({
   onLoopChange,
   onHandChange,
   onClearLoop,
+  onSeek,
   onShowNoteNamesChange,
   onShowKeyLabelsChange,
   onTestTone,
@@ -127,6 +131,8 @@ export function TutorialPlayer({
           <TransportControls
             isComplete={isComplete}
             isPlaying={isPlaying}
+            playbackTime={playbackTime}
+            playbackDuration={playbackDuration}
             tempo={tempo}
             metronomeOn={metronomeOn}
             currentLoop={currentLoop}
@@ -135,6 +141,7 @@ export function TutorialPlayer({
             onMetronomeToggle={onMetronomeToggle}
             onTempoChange={onTempoChange}
             onClearLoop={onClearLoop}
+            onSeek={onSeek}
             onTestTone={onTestTone}
           />
 
