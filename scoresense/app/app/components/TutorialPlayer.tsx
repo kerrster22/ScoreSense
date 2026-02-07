@@ -40,6 +40,7 @@ interface TutorialPlayerProps {
   onClearLoop: () => void
   onShowNoteNamesChange: (value: boolean) => void
   onShowKeyLabelsChange: (value: boolean) => void
+  onTestTone?: () => Promise<void>
 }
 
 export function TutorialPlayer({
@@ -67,6 +68,7 @@ export function TutorialPlayer({
   onClearLoop,
   onShowNoteNamesChange,
   onShowKeyLabelsChange,
+  onTestTone,
 }: TutorialPlayerProps) {
   // ---------------------------------------------------------------------------
   // Keyboard "Fit vs Scroll" + Zoom + Scroll sync for visualiser alignment
@@ -144,6 +146,7 @@ export function TutorialPlayer({
             onMetronomeToggle={onMetronomeToggle}
             onTempoChange={onTempoChange}
             onClearLoop={onClearLoop}
+            onTestTone={onTestTone}
           />
 
           <PracticeControls

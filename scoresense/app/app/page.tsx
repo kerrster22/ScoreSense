@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState, useEffect, useCallback, useRef } from "react"
+import * as Tone from "tone"
 
 // Components
 import { AppTopNav } from "./components/AppTopNav"
@@ -25,6 +26,7 @@ import type {
 import { useMidi } from "./lib/useMidi"
 import { generateFullPianoKeys } from "./lib/piano"
 import { useMusicXml } from "./hooks/useMusicXml"
+import { getPianoAudioEngine, type PianoAudioEngineState } from "./lib/pianoAudioEngine"
 
 // ============================================================================
 // Constants / Mock Data
@@ -139,6 +141,13 @@ export default function AppPage() {
   const animationRef = useRef<number>(null)
   const lastTimeRef = useRef<number>(0)
 
+  // Audio engine state
+  const [audioEngineState, setAudioEngineState] = useState<PianoAudioEngineState>({
+    status: "loading",
+    error: null,
+  })
+  const audioEngineRef = useRef(getPianoAudioEngine())
+
   // -------------------------------------------------------------------------
   // Derived: Notes for player
   // Priority:
@@ -180,6 +189,31 @@ export default function AppPage() {
     if (musicXmlState.status === "ready") return musicXmlState.duration
     return 8
   }, [midiState, musicXmlState])
+
+  // -------------------------------------------------------------------------
+  // File Upload Handlers
+  // -------------------------------------------------------------------------
+
+  // Initialize audio engine on mount
+  useEffect(() => {
+    const engine = audioEngineRef.current
+    const initEngine = async () => {
+      try {
+        await engine.load()
+        setAudioEngineState({ status: "ready", error: null })
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : "Unknown error"
+        setAudioEngineState({ status: "error", error: errMsg })
+        console.error("Audio engine failed to load:", errMsg)
+      }
+    }
+    
+    initEngine()
+
+    return () => {
+      // Keep engine alive on unmount (don't dispose)
+    }
+  }, [])
 
   // -------------------------------------------------------------------------
   // File Upload Handlers
@@ -284,13 +318,42 @@ export default function AppPage() {
   // Player Handlers
   // -------------------------------------------------------------------------
 
-  const handlePlayPause = useCallback(() => {
-    setIsPlaying((prev) => !prev)
-  }, [])
+  const handlePlayPause = useCallback(async () => {
+    const engine = audioEngineRef.current
+    if (engine.getState().status !== "ready") {
+      console.warn("Cannot play: audio engine not ready")
+      return
+    }
+
+    try {
+      if (isPlaying) {
+        // Pause
+        engine.pause()
+        setIsPlaying(false)
+        console.log("Playback paused")
+      } else {
+        // Play—must be inside the click handler to satisfy browser autoplay policy
+        console.log("Starting playback...")
+        await engine.play()
+        setIsPlaying(true)
+        console.log("Playback started")
+      }
+    } catch (err) {
+      console.error("Play/pause error:", err)
+      setIsPlaying(false)
+    }
+  }, [isPlaying])
 
   const handleReset = useCallback(() => {
-    setPlaybackTime(0)
-    setIsPlaying(false)
+    const engine = audioEngineRef.current
+    try {
+      engine.stop()
+      setPlaybackTime(0)
+      setIsPlaying(false)
+      console.log("Playback reset")
+    } catch (err) {
+      console.error("Reset error:", err)
+    }
   }, [])
 
   const handleMetronomeToggle = useCallback(() => {
@@ -299,6 +362,34 @@ export default function AppPage() {
 
   const handleTempoChange = useCallback((value: number) => {
     setTempo(value)
+    // Apply tempo to audio engine immediately
+    const engine = audioEngineRef.current
+    engine.setTempo(value)
+    console.log(`Tempo changed to ${value}%`)
+  }, [])
+
+  const handleTestTone = useCallback(async () => {
+    const engine = audioEngineRef.current
+    if (engine.getState().status !== "ready") {
+      console.warn("Audio engine not ready for test tone")
+      return
+    }
+
+    try {
+      console.log("Testing audio: playing C4 for 1 second...")
+      // Ensure audio context is initialized
+      await Tone.start()
+      // Get the sampler and play a note
+      const sampler = (engine as any).sampler
+      if (!sampler) {
+        console.error("Sampler not available")
+        return
+      }
+      sampler.triggerAttackRelease("C4", 1)
+      console.log("Test tone played successfully")
+    } catch (err) {
+      console.error("Test tone error:", err)
+    }
   }, [])
 
   const handleLoopChange = useCallback((value: string) => {
@@ -320,31 +411,61 @@ export default function AppPage() {
     setLoopSelection("custom")
   }, [])
 
-  // Playback animation effect
+  // Set notes to audio engine when they change
   useEffect(() => {
-    if (!isPlaying || !isComplete) return
+    const engine = audioEngineRef.current
+    const filteredNotes = notesForPlayer.filter((note) => {
+      if (handSelection === "right" && note.hand === "left") return false
+      if (handSelection === "left" && note.hand === "right") return false
+      return true
+    })
+    engine.setNotes(filteredNotes)
+  }, [notesForPlayer, handSelection])
 
-    const animate = (timestamp: number) => {
-      if (!lastTimeRef.current) lastTimeRef.current = timestamp
-      const delta = (timestamp - lastTimeRef.current) / 1000
-      lastTimeRef.current = timestamp
+  // Playback animation effect: sync playbackTime with audio engine
+  useEffect(() => {
+    if (!isPlaying || !isComplete) {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current)
+        animationRef.current = null
+      }
+      return
+    }
 
-      setPlaybackTime((prev) => {
-        const speed = tempo / 75
-        const newTime = prev + delta * speed
-        return newTime > playbackDuration ? 0 : newTime
-      })
+    const animate = () => {
+      try {
+        const engine = audioEngineRef.current
+        const currentTime = engine.getTime()
+        
+        // Update playbackTime from audio engine (single source of truth)
+        setPlaybackTime(currentTime)
 
-      animationRef.current = requestAnimationFrame(animate)
+        // Stop if we've reached the end
+        if (currentTime >= playbackDuration) {
+          engine.stop()
+          setPlaybackTime(0)
+          setIsPlaying(false)
+          console.log("Playback finished")
+          return
+        }
+
+        // Continue animation
+        animationRef.current = requestAnimationFrame(animate)
+      } catch (err) {
+        console.error("Animation frame error:", err)
+        setIsPlaying(false)
+      }
     }
 
     animationRef.current = requestAnimationFrame(animate)
 
     return () => {
-      if (animationRef.current) cancelAnimationFrame(animationRef.current)
-      lastTimeRef.current = 0
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current)
+        animationRef.current = null
+      }
     }
-  }, [isPlaying, isComplete, tempo, playbackDuration])
+  }, [isPlaying, isComplete, playbackDuration])
 
   // Update active keys based on playback time
   useEffect(() => {
@@ -398,6 +519,20 @@ export default function AppPage() {
 
           {/* Right Column - Tutorial Player */}
           <div className="lg:col-span-8 space-y-3">
+            {/* Audio Engine Debug Panel */}
+            {isComplete && (
+              <div className="text-xs bg-secondary/40 border border-border/50 rounded p-3 space-y-1">
+                <div className="font-semibold text-foreground">🎹 Audio Engine</div>
+                <div className="text-muted-foreground space-y-0.5">
+                  <div>Status: {audioEngineState.status} {audioEngineState.status === "ready" && "✅"}</div>
+                  {audioEngineState.error && <div className="text-red-400">Error: {audioEngineState.error}</div>}
+                  <div>Playback rate: {((tempo / 100) * 0.75).toFixed(3)}x (tempo {tempo})</div>
+                  <div>Time: {playbackTime.toFixed(2)}s / {playbackDuration.toFixed(2)}s</div>
+                  <div>Notes: {notesForPlayer.length} total • First: {notesForPlayer[0]?.note} @ {notesForPlayer[0]?.startTime}s</div>
+                </div>
+              </div>
+            )}
+
             {/* Debug readout */}
             {(midiUrl || musicXmlUrl) && (
               <div className="text-xs text-muted-foreground space-y-1">
@@ -451,6 +586,7 @@ export default function AppPage() {
                 onClearLoop={handleClearLoop}
                 onShowNoteNamesChange={setShowNoteNames}
                 onShowKeyLabelsChange={setShowKeyLabels}
+                onTestTone={handleTestTone}
               />
 
               <PatternInsights

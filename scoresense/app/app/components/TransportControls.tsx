@@ -3,7 +3,8 @@
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { Label } from "@/components/ui/label"
-import { Play, Pause, RotateCcw, Microscope as Metronome, Repeat, X } from "lucide-react"
+import { Play, Pause, RotateCcw, Microscope as Metronome, Repeat, X, Volume2 } from "lucide-react"
+import { useState } from "react"
 import type { LoopRange } from "./types"
 
 interface TransportControlsProps {
@@ -17,6 +18,7 @@ interface TransportControlsProps {
   onMetronomeToggle: () => void
   onTempoChange: (value: number) => void
   onClearLoop: () => void
+  onTestTone?: () => Promise<void>
 }
 
 export function TransportControls({
@@ -30,7 +32,21 @@ export function TransportControls({
   onMetronomeToggle,
   onTempoChange,
   onClearLoop,
+  onTestTone,
 }: TransportControlsProps) {
+  const [isTestingTone, setIsTestingTone] = useState(false)
+
+  const handleTestTone = async () => {
+    if (!onTestTone) return
+    setIsTestingTone(true)
+    try {
+      await onTestTone()
+    } catch (err) {
+      console.error("Test tone failed:", err)
+    } finally {
+      setIsTestingTone(false)
+    }
+  }
   return (
     <div className="space-y-6">
       {/* Loop Status Pill */}
@@ -80,6 +96,17 @@ export function TransportControls({
         >
           <Metronome className="h-4 w-4" />
         </Button>
+        {onTestTone && (
+          <Button
+            variant="outline"
+            size="icon"
+            disabled={!isComplete || isTestingTone}
+            onClick={handleTestTone}
+            title="Test audio by playing C4 for 1 second"
+          >
+            <Volume2 className="h-4 w-4" />
+          </Button>
+        )}
       </div>
 
       {/* Tempo Slider */}
