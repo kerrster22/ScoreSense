@@ -310,6 +310,17 @@ export function VisualizerPanel({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const rafRef = useRef<number | null>(null)
 
+  // Store playbackTime in a ref so the rAF loop never restarts on time change.
+  // The draw loop reads .current each frame instead of depending on state.
+  const playbackTimeRef = useRef(playbackTime)
+  playbackTimeRef.current = playbackTime
+
+  // Also store other frequently-changing but non-structural values as refs
+  const tempoRef = useRef(tempo)
+  tempoRef.current = tempo
+  const showNoteNamesRef = useRef(showNoteNames)
+  showNoteNamesRef.current = showNoteNames
+
   // Persistent refs for VFX state (never cause re-renders)
   const hitPoolRef = useRef<HitEffect[]>(createHitEffectPool(MAX_HIT_EFFECTS))
   const particlePoolRef = useRef<Particle[]>(createParticlePool(MAX_PARTICLES))
@@ -414,6 +425,9 @@ export function VisualizerPanel({
       const w = canvas.clientWidth
       const h = VISUALIZER_HEIGHT
       const nowMs = performance.now()
+      const currentPlaybackTime = playbackTimeRef.current
+      const currentTempo = tempoRef.current
+      const currentShowNoteNames = showNoteNamesRef.current
 
       ctx.clearRect(0, 0, w, h)
 
@@ -522,8 +536,8 @@ export function VisualizerPanel({
       // PASS 3: Notes – neon bars with inner gradient and outer glow
       // =====================================================================
       const pps = BASE_PPS
-      const windowStart = playbackTime - LOOKBEHIND_SEC
-      const windowEnd = playbackTime + LOOKAHEAD_SEC
+      const windowStart = currentPlaybackTime - LOOKBEHIND_SEC
+      const windowEnd = currentPlaybackTime + LOOKAHEAD_SEC
       const startIdx = findStartIndexIncludingSustains(filteredNotes, windowStart)
       const viewW = keyboardViewportWidth ?? w
 
@@ -538,7 +552,7 @@ export function VisualizerPanel({
         if (!pos) continue
 
         const noteHeight = Math.max(MIN_NOTE_PX, n.duration * pps)
-        const y = hitLineY - (n.startTime - playbackTime) * pps - noteHeight
+        const y = hitLineY - (n.startTime - currentPlaybackTime) * pps - noteHeight
         if (y > h || y + noteHeight < 0) continue
 
         let x = 0
@@ -560,40 +574,42 @@ export function VisualizerPanel({
         const color = isRight ? VFX_CONFIG.rhColor : VFX_CONFIG.lhColor
         const glow = isRight ? VFX_CONFIG.rhGlow : VFX_CONFIG.lhGlow
 
-        // Check if this note is in the "hit" zone
-        const isHit =
-          playbackTime >= n.startTime - HIT_EARLY &&
-          playbackTime < n.startTime + HIT_LATE
+        // --- Smooth proximity-based glow (replaces binary isHit/isSustained) ---
+        // hitProximity ramps 0..1..0 as note approaches and passes the hit line
+        const distToHit = currentPlaybackTime - n.startTime
+        const approachT = clamp(1 - Math.abs(distToHit) / 0.2, 0, 1) // 200ms ramp
+        const hitProximity = easeOutCubic(approachT)
 
-        const isSustained =
-          playbackTime >= n.startTime &&
-          playbackTime < n.startTime + n.duration
+        const isSustained = distToHit >= 0 && distToHit < n.duration
+        // sustainFade: 1 at start, fades to 0.3 over the note duration
+        const sustainFade = isSustained
+          ? 1 - easeOutCubic(clamp(distToHit / Math.max(n.duration, 0.01), 0, 1)) * 0.7
+          : 0
 
-        // Track hit for bloom spawn
+        const isHit = distToHit >= -HIT_EARLY && distToHit < HIT_LATE
+
+        // Track hit for bloom spawn (only once per note-on)
         if (isHit) {
           currentHitSet.add(n.id)
           if (!prevHitSetRef.current.has(n.id)) {
-            // New hit: spawn bloom effect + particles
             spawnHitEffect(
               hitPoolRef.current, n.id,
               xCentered, hitLineY, ww, isRight, nowMs
             )
-            if (VFX_CONFIG.hitEffectStyle === "keyGlowSparks" || VFX_CONFIG.hitEffectStyle === "bloom") {
-              emitParticles(particlePoolRef.current, xCentered, hitLineY, ww, isRight, nowMs)
-            }
+            emitParticles(particlePoolRef.current, xCentered, hitLineY, ww, isRight, nowMs)
           }
         }
 
-        // --- Outer glow via cached sprite (no per-frame shadowBlur) ---
-        if (glowSprites && (isHit || isSustained)) {
+        // --- Outer glow via cached sprite (smooth fade, no shadowBlur) ---
+        const glowIntensity = Math.max(hitProximity * 0.5, sustainFade * 0.25)
+        if (glowSprites && glowIntensity > 0.01) {
           const sprite = isRight ? glowSprites.rh : glowSprites.lh
-          const glowScale = isHit ? 3.0 : isSustained ? 2.2 : 1.5
+          const glowScale = 1.5 + hitProximity * 1.5 + sustainFade * 0.7
           const glowW = ww * glowScale
           const glowH = Math.min(noteHeight * 1.3, 80)
-          const glowAlpha = isHit ? 0.5 : isSustained ? 0.25 : 0
 
           ctx.save()
-          ctx.globalAlpha = glowAlpha * VFX_CONFIG.glowIntensityScale
+          ctx.globalAlpha = glowIntensity * VFX_CONFIG.glowIntensityScale
           ctx.globalCompositeOperation = "lighter"
           ctx.drawImage(
             sprite,
@@ -605,35 +621,43 @@ export function VisualizerPanel({
           ctx.restore()
         }
 
-        // --- Note bar: rounded rect with inner gradient ---
+        // --- Note bar: smooth alpha based on proximity ---
         ctx.save()
-        const baseAlpha = isHit ? 0.95 : isSustained ? 0.85 : 0.7
-        const grad = ctx.createLinearGradient(xCentered, y, xCentered, y + noteHeight)
-        grad.addColorStop(0, `rgba(${color.r},${color.g},${color.b},${baseAlpha})`)
-        grad.addColorStop(0.5, `rgba(${color.r + 20},${color.g + 20},${color.b + 20},${baseAlpha * 0.9})`)
-        grad.addColorStop(1, `rgba(${glow.r},${glow.g},${glow.b},${baseAlpha * 0.65})`)
+        const baseAlpha = 0.55 + hitProximity * 0.40 + sustainFade * 0.20
 
-        ctx.fillStyle = grad
+        // Only create gradient for bright notes; use solid fill for distant ones
+        if (hitProximity > 0.05 || sustainFade > 0.05) {
+          const grad = ctx.createLinearGradient(xCentered, y, xCentered, y + noteHeight)
+          grad.addColorStop(0, `rgba(${color.r},${color.g},${color.b},${baseAlpha})`)
+          grad.addColorStop(0.5, `rgba(${color.r + 20},${color.g + 20},${color.b + 20},${baseAlpha * 0.9})`)
+          grad.addColorStop(1, `rgba(${glow.r},${glow.g},${glow.b},${baseAlpha * 0.65})`)
+          ctx.fillStyle = grad
+        } else {
+          ctx.fillStyle = `rgba(${color.r},${color.g},${color.b},${baseAlpha})`
+        }
+
         roundRect(ctx, xCentered, y, ww, noteHeight, 8)
         ctx.fill()
 
-        // Subtle inner highlight (top edge shine)
+        // Top edge shine (smooth)
+        const shineAlpha = 0.06 + hitProximity * 0.20
         const shine = ctx.createLinearGradient(xCentered, y, xCentered, y + 6)
-        shine.addColorStop(0, `rgba(255,255,255,${isHit ? 0.25 : 0.12})`)
+        shine.addColorStop(0, `rgba(255,255,255,${shineAlpha})`)
         shine.addColorStop(1, "rgba(255,255,255,0)")
         ctx.fillStyle = shine
         roundRect(ctx, xCentered, y, ww, Math.min(noteHeight, 6), 8)
         ctx.fill()
 
-        // Outline
-        ctx.strokeStyle = `rgba(255,255,255,${isHit ? 0.2 : 0.08})`
+        // Outline (smooth)
+        const outlineAlpha = 0.04 + hitProximity * 0.16
+        ctx.strokeStyle = `rgba(255,255,255,${outlineAlpha})`
         ctx.lineWidth = 1
         roundRect(ctx, xCentered, y, ww, noteHeight, 8)
         ctx.stroke()
 
         // Note label
-        if (showNoteNames) {
-          const labelAlpha = tempo > 80 ? 0.55 : 0.9
+        if (currentShowNoteNames) {
+          const labelAlpha = currentTempo > 80 ? 0.55 : 0.9
           ctx.globalAlpha = labelAlpha
 
           const label = n.note
@@ -765,9 +789,6 @@ export function VisualizerPanel({
     isComplete,
     filteredNotes,
     keyPositions,
-    playbackTime,
-    tempo,
-    showNoteNames,
     keyboardMode,
     keyboardZoom,
     keyboardScrollLeft,
