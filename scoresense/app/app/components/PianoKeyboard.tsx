@@ -144,12 +144,12 @@ export function PianoKeyboard({
                     "shadow-[inset_0_1px_0_rgba(255,255,255,0.10),inset_0_-2px_0_rgba(0,0,0,0.18)]",
                     idx === 0 ? "rounded-l-xl" : "",
                     idx === whiteKeys.length - 1 ? "rounded-r-xl" : "",
-                    // press animation (snappy)
-                    "transition-[transform,background-color,box-shadow] duration-75 ease-out will-change-transform",
-                    // active = MUCH stronger
+                    // smooth press + glow fade (not instant)
+                    "transition-all duration-200 ease-out will-change-transform",
+                    // active = smooth glow that will fade via transition when deactivated
                     isActive
-                      ? "bg-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_0_26px_rgba(168,85,247,0.55),0_0_70px_rgba(168,85,247,0.18)]"
-                      : "",
+                      ? "bg-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_0_22px_rgba(236,72,153,0.45),0_0_50px_rgba(168,85,247,0.15)]"
+                      : "shadow-[inset_0_1px_0_rgba(255,255,255,0.10),inset_0_-2px_0_rgba(0,0,0,0.18)]",
                   ].join(" ")}
                   style={{
                     ...widthStyle,
@@ -162,10 +162,11 @@ export function PianoKeyboard({
                   {/* subtle vertical sheen */}
                   <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-background/[0.04] to-transparent" />
 
-                  {/* impact sheen when active */}
-                  {isActive && (
-                    <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/30 via-white/10 to-transparent" />
-                  )}
+                  {/* Organic glow overlay – fades in/out via parent transition */}
+                  <div
+                    className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/20 via-white/5 to-transparent transition-opacity duration-300 ease-out"
+                    style={{ opacity: isActive ? 1 : 0 }}
+                  />
 
                   {/* Pulse ring (feels more “alive”) */}
                   {isActive && (
@@ -226,9 +227,9 @@ export function PianoKeyboard({
                     // matte black with depth
                     "bg-gradient-to-b from-background via-background/92 to-background/85",
                     "shadow-[0_8px_14px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.08)]",
-                    "transition-[transform,background-color,box-shadow] duration-75 ease-out will-change-transform",
+                    "transition-all duration-200 ease-out will-change-transform",
                     isActive
-                      ? "bg-accent shadow-[0_0_28px_rgba(168,85,247,0.60),0_10px_18px_rgba(0,0,0,0.70),inset_0_1px_0_rgba(255,255,255,0.22)]"
+                      ? "bg-accent shadow-[0_0_22px_rgba(236,72,153,0.50),0_10px_18px_rgba(0,0,0,0.70),inset_0_1px_0_rgba(255,255,255,0.22)]"
                       : "",
                   ].join(" ")}
                   style={{
@@ -239,9 +240,11 @@ export function PianoKeyboard({
                 >
                   {/* tiny top gloss strip */}
                   <div className="absolute left-1 right-1 top-1 h-1 rounded-full bg-white/10" />
-                  {isActive && (
-                    <div className="absolute inset-1 rounded-lg ring-2 ring-background/20 animate-[pulse_0.6s_ease-out_1]" />
-                  )}
+                  {/* Smooth glow overlay */}
+                  <div
+                    className="pointer-events-none absolute inset-0 rounded-b-lg bg-gradient-to-b from-white/15 to-transparent transition-opacity duration-300 ease-out"
+                    style={{ opacity: isActive ? 1 : 0 }}
+                  />
 
                   {showKeyLabels && mode === "scroll" && (
                     <span
