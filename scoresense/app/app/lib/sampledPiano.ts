@@ -3,7 +3,7 @@
 /**
  * Sampled Piano Audio System
  * 
- * Plays pre-recorded piano samples from the public/piano-mp3 folder
+ * Plays pre-recorded piano samples from Salamander Grand Piano CDN
  * instead of synthesizing sounds. Provides better realism than synthesis.
  */
 
@@ -11,23 +11,74 @@ import { noteNameToMidi, midiToNoteName } from "../hooks/useGrandPiano"
 
 export interface SampledPianoConfig {
   volume?: number // 0 to 1
-  samplePath?: string // Path to samples folder
+  samplePath?: string // Path to samples folder (unused, kept for compat)
+}
+
+/**
+ * Sparse sample URLs for Salamander Grand Piano.
+ * We load a subset and find the nearest sample for any given note.
+ */
+const SALAMANDER_BASE_URL = "https://tonejs.github.io/audio/salamander/"
+
+const SALAMANDER_NOTES: { name: string; midi: number; file: string }[] = [
+  { name: "A0", midi: 21, file: "A0.mp3" },
+  { name: "C1", midi: 24, file: "C1.mp3" },
+  { name: "D#1", midi: 27, file: "Ds1.mp3" },
+  { name: "F#1", midi: 30, file: "Fs1.mp3" },
+  { name: "A1", midi: 33, file: "A1.mp3" },
+  { name: "C2", midi: 36, file: "C2.mp3" },
+  { name: "D#2", midi: 39, file: "Ds2.mp3" },
+  { name: "F#2", midi: 42, file: "Fs2.mp3" },
+  { name: "A2", midi: 45, file: "A2.mp3" },
+  { name: "C3", midi: 48, file: "C3.mp3" },
+  { name: "D#3", midi: 51, file: "Ds3.mp3" },
+  { name: "F#3", midi: 54, file: "Fs3.mp3" },
+  { name: "A3", midi: 57, file: "A3.mp3" },
+  { name: "C4", midi: 60, file: "C4.mp3" },
+  { name: "D#4", midi: 63, file: "Ds4.mp3" },
+  { name: "F#4", midi: 66, file: "Fs4.mp3" },
+  { name: "A4", midi: 69, file: "A4.mp3" },
+  { name: "C5", midi: 72, file: "C5.mp3" },
+  { name: "D#5", midi: 75, file: "Ds5.mp3" },
+  { name: "F#5", midi: 78, file: "Fs5.mp3" },
+  { name: "A5", midi: 81, file: "A5.mp3" },
+  { name: "C6", midi: 84, file: "C6.mp3" },
+  { name: "D#6", midi: 87, file: "Ds6.mp3" },
+  { name: "F#6", midi: 90, file: "Fs6.mp3" },
+  { name: "A6", midi: 93, file: "A6.mp3" },
+  { name: "C7", midi: 96, file: "C7.mp3" },
+  { name: "D#7", midi: 99, file: "Ds7.mp3" },
+  { name: "F#7", midi: 102, file: "Fs7.mp3" },
+  { name: "A7", midi: 105, file: "A7.mp3" },
+  { name: "C8", midi: 108, file: "C8.mp3" },
+]
+
+/** Find the nearest Salamander sample for a given MIDI number */
+function findNearestSample(midi: number): { sample: typeof SALAMANDER_NOTES[0]; semitoneDiff: number } {
+  let best = SALAMANDER_NOTES[0]
+  let bestDiff = Math.abs(midi - best.midi)
+  for (const s of SALAMANDER_NOTES) {
+    const diff = Math.abs(midi - s.midi)
+    if (diff < bestDiff) {
+      best = s
+      bestDiff = diff
+    }
+  }
+  return { sample: best, semitoneDiff: midi - best.midi }
 }
 
 /**
  * Sampled Piano Player using Web Audio API
- * Loads and plays pre-recorded piano samples
+ * Loads and plays pre-recorded Salamander piano samples from CDN
  */
 export class SampledPianPlayer {
   private audioContext: AudioContext | null = null
   private gainNode: GainNode | null = null
   private sampleCache: Map<string, AudioBuffer> = new Map()
   private playingNotes: Map<number, AudioBufferSourceNode> = new Map()
-  private samplePath: string
   private isInitialized: boolean = false
 
   constructor(config: SampledPianoConfig = {}) {
-    this.samplePath = config.samplePath || "/piano-mp3"
     this.setVolume(config.volume ?? 0.7)
   }
 
@@ -49,25 +100,39 @@ export class SampledPianPlayer {
   }
 
   /**
-   * Load a sample from cache or fetch it
+   * Load a sample from cache or fetch from CDN
+   * Uses the nearest Salamander sample and pitch-shifts via playbackRate
    */
-  private async loadSample(noteName: string): Promise<AudioBuffer | null> {
+  private async loadSample(noteName: string): Promise<{ buffer: AudioBuffer; playbackRate: number } | null> {
     if (!this.audioContext) {
       console.warn("Audio context not initialized")
       return null
     }
 
+    // Convert note name to MIDI for nearest-sample lookup
+    const midi = noteNameToMidi(noteName)
+    if (midi === null) {
+      console.warn(`Invalid note name: ${noteName}`)
+      return null
+    }
+
+    const { sample, semitoneDiff } = findNearestSample(midi)
+    const cacheKey = sample.file
+
     // Check cache first
-    if (this.sampleCache.has(noteName)) {
-      return this.sampleCache.get(noteName)!
+    if (this.sampleCache.has(cacheKey)) {
+      return {
+        buffer: this.sampleCache.get(cacheKey)!,
+        playbackRate: Math.pow(2, semitoneDiff / 12),
+      }
     }
 
     try {
-      const samplePath = `${this.samplePath}/${noteName}.mp3`
-      const response = await fetch(samplePath)
+      const url = `${SALAMANDER_BASE_URL}${sample.file}`
+      const response = await fetch(url)
 
       if (!response.ok) {
-        console.warn(`Sample not found: ${noteName}`)
+        console.warn(`Sample not found on CDN: ${sample.file}`)
         return null
       }
 
@@ -75,10 +140,13 @@ export class SampledPianPlayer {
       const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer)
 
       // Cache it
-      this.sampleCache.set(noteName, audioBuffer)
-      return audioBuffer
+      this.sampleCache.set(cacheKey, audioBuffer)
+      return {
+        buffer: audioBuffer,
+        playbackRate: Math.pow(2, semitoneDiff / 12),
+      }
     } catch (error) {
-      console.warn(`Failed to load sample ${noteName}:`, error)
+      console.warn(`Failed to load sample ${sample.file}:`, error)
       return null
     }
   }
@@ -108,17 +176,20 @@ export class SampledPianPlayer {
       noteName = midi
     }
 
-    // Load the sample
-    const audioBuffer = await this.loadSample(noteName)
-    if (!audioBuffer) {
+    // Load the nearest sample from CDN
+    const result = await this.loadSample(noteName)
+    if (!result) {
       console.warn(`Could not load sample for ${noteName}`)
       return
     }
+
+    const { buffer: audioBuffer, playbackRate } = result
 
     try {
       // Create source and connect to gain
       const source = this.audioContext.createBufferSource()
       source.buffer = audioBuffer
+      source.playbackRate.value = playbackRate // pitch-shift to correct note
       source.connect(this.gainNode)
 
       // Apply velocity if provided

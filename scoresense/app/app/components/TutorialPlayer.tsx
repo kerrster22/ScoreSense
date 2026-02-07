@@ -8,8 +8,6 @@ import { TransportControls } from "./TransportControls"
 import { PracticeControls } from "./PracticeControls"
 import { VisualAidsToggles } from "./VisualAidsToggles"
 import { AudioControls } from "./AudioControls"
-import { PianoSoundProvider } from "./PianoSoundProvider"
-import { useSampledPiano } from "../hooks/useSampledPiano"
 import type { Note, PianoKey, LoopRange, LoopOption, HandOption } from "./types"
 
 interface TutorialPlayerProps {
@@ -80,8 +78,8 @@ export function TutorialPlayer({
   const [keyboardScrollLeft, setKeyboardScrollLeft] = useState<number>(0)
   const [keyboardViewportWidth, setKeyboardViewportWidth] = useState<number | undefined>(undefined)
 
-  // Audio controls
-  const { volume, setVolume } = useSampledPiano()
+  // Audio controls (local state – the PianoAudioEngine handles actual playback)
+  const [volume, setVolume] = useState<number>(0.7)
 
   const handleKeyboardScrollChange = useCallback((scrollLeft: number, viewportWidth: number) => {
     setKeyboardScrollLeft(scrollLeft)
@@ -90,15 +88,6 @@ export function TutorialPlayer({
 
   return (
     <div className="space-y-6">
-      {/* Piano Sound Provider - Handles audio synthesis */}
-      <PianoSoundProvider
-        notes={notes}
-        playbackTime={playbackTime}
-        isPlaying={isPlaying}
-        tempo={tempo}
-        handSelection={handSelection as "both" | "left" | "right"}
-      />
-
       {/* Visualizer & Piano */}
       <Card className="overflow-hidden">
         <CardContent className="p-0 space-y-0">
