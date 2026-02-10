@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { loadMusicXmlFromUrl, type MusicXmlParseResult, type MeasureMapEntry } from "../lib/musicmxl"
+import { loadMusicXmlFromUrl, type MusicXmlParseResult, type MeasureMapEntry, type ParserStats } from "../lib/musicmxl"
 
 type MusicXmlState =
   | { status: "idle" }
@@ -13,6 +13,7 @@ type MusicXmlState =
       measureMap: MeasureMapEntry[]
       detectedBpm?: number
       timeSignature?: { beats: number; beatType: number }
+      stats?: ParserStats
     }
   | { status: "error"; error: string }
 
@@ -39,6 +40,7 @@ export function useMusicXml(url: string | null, opts?: { bpm?: number }) {
           measureMap: data.measureMap,
           detectedBpm: data.detectedBpm,
           timeSignature: data.timeSignature,
+          stats: data.stats,
         })
       } catch (e: any) {
         if (cancelled) return

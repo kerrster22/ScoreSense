@@ -32,6 +32,7 @@ import type {
 import { useMidi } from "./lib/useMidi"
 import { generateFullPianoKeys } from "./lib/piano"
 import { useMusicXml } from "./hooks/useMusicXml"
+import { useHybridScore } from "./hooks/useHybridScore"
 import { getPianoAudioEngine, type PianoAudioEngineState } from "./lib/pianoAudioEngine"
 import { analyzePiece, ALGO_VERSION } from "./lib/practiceAnalysis"
 import {
@@ -188,32 +189,29 @@ export default function AppPage() {
   // 3) Mock
   // -------------------------------------------------------------------------
 
+  // Hybrid pipeline: prefer combined alignment of MIDI timing + MusicXML semantics
+  const hybrid = useHybridScore({ midiUrl, xmlUrl: musicXmlUrl })
+
   const notesForPlayer: Note[] = React.useMemo(() => {
-    // ✅ Best: MusicXML gives correct staff-based hands
-    if (musicXmlState.status === "ready") {
-      return musicXmlState.events.map((e: any, idx: number) => ({
-        id: idx + 1,
-        note: e.note, // assumes your MusicXML parser returns { note: "C#4" }
-        hand: e.hand, // "left" | "right" derived from staff
+    if (hybrid.status === "ready" || hybrid.status === "midi-only" || hybrid.status === "xml-only") {
+      const evts = hybrid.events
+      return evts.map((e, idx) => ({
+        id: e.id,
+        note: e.noteName,
+        midi: e.midi,
+        hand: e.hand,
         startTime: e.startTime,
         duration: e.duration,
-      }))
-    }
-
-    // Fallback: MIDI timing, but hands are guessed (not ideal)
-    if (midiState.status === "ready") {
-      return midiState.events.map((e: any, idx: number) => ({
-        id: idx + 1,
-        note: e.name,
-        // ⚠️ MIDI does not know “hand”. This is only a fallback.
-        hand: e.midi <= 60 ? "left" : "right",
-        startTime: e.time,
-        duration: e.duration,
+        velocity: e.velocity,
+        staff: e.staff,
+        voice: e.voice,
+        measure: e.measure,
+        source: e.source,
       }))
     }
 
     return MOCK_NOTES
-  }, [musicXmlState, midiState])
+  }, [hybrid])
 
   // Determine playback length (prefer MIDI duration, else MusicXML duration)
   const playbackDuration = React.useMemo(() => {
@@ -328,8 +326,8 @@ export default function AppPage() {
           // Make sure these files exist:
           // /public/demo3.mid
           // /public/demo3.musicxml  (or .xml)
-          setMidiUrl("/demo3.mid")
-          setMusicXmlUrl("/demo4.mxl")
+          setMidiUrl("/demo10.mid")
+          setMusicXmlUrl("/demo10.mxl")
 
           clearInterval(interval)
           return 100
@@ -465,15 +463,20 @@ export default function AppPage() {
   // Set notes to audio engine based on handAudioMode
   useEffect(() => {
     const engine = audioEngineRef.current
-    const filteredNotes = notesForPlayer.filter((note) => {
-      switch (handAudioMode) {
-        case "right-only": return note.hand === "right"
-        case "left-only": return note.hand === "left"
-        case "mute-right": return note.hand !== "right"
-        case "mute-left": return note.hand !== "left"
-        default: return true
-      }
-    })
+    const filteredNotes = notesForPlayer
+      .filter((note) => {
+        switch (handAudioMode) {
+          case "right-only": return note.hand === "right"
+          case "left-only": return note.hand === "left"
+          case "mute-right": return note.hand !== "right"
+          case "mute-left": return note.hand !== "left"
+          default: return true
+        }
+      })
+      .map((note) => ({
+        ...note,
+        id: typeof note.id === "string" ? parseInt(note.id, 10) : note.id,
+      }))
     engine.setNotes(filteredNotes)
   }, [notesForPlayer, handAudioMode])
 
@@ -787,6 +790,15 @@ export default function AppPage() {
                   <div>
                     MIDI: Loaded {midiState.events.length} notes • Duration {midiState.duration.toFixed(1)}s
                     {midiState.bpm ? ` • BPM ~${Math.round(midiState.bpm)}` : ""}
+                  </div>
+                )}
+                {/* Hybrid alignment status */}
+                {(midiUrl || musicXmlUrl) && (
+                  <div>
+                    Hybrid: {hybrid.status}
+                    {hybrid.status === "ready" && (
+                      <span> • Matched {hybrid.stats?.matchedCount ?? 0}/{hybrid.stats?.midiCount ?? 0} • Avg conf {((hybrid.stats?.averageConfidence ?? 0)*100).toFixed(0)}%</span>
+                    )}
                   </div>
                 )}
               </div>

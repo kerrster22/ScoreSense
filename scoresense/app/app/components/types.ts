@@ -4,11 +4,22 @@ export interface UploadedFile {
 }
 
 export interface Note {
-  id: number
+  // id may come from MIDI or XML; accept string or number for flexibility
+  id: string | number
+  // Note name like C#4
   note: string
+  // MIDI note number when available
+  midi?: number
   hand: "right" | "left"
   startTime: number
   duration: number
+  // Optional expressive info
+  velocity?: number
+  staff?: number
+  voice?: string
+  measure?: number
+  // Source provenance and confidence (0..1)
+  source?: { midiId?: string; xmlId?: string; confidence: number }
 }
 
 export interface PianoKey {
