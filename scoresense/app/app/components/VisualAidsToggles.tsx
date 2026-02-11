@@ -16,7 +16,7 @@ export function VisualAidsToggles({
   onShowKeyLabelsChange,
 }: VisualAidsTogglesProps) {
   return (
-    <div className="space-y-3 pt-2 border-t border-border">
+    <div className="space-y-3">
       <Label className="text-sm text-muted-foreground flex items-center gap-2">
         <Eye className="h-4 w-4" />
         Visual Aids

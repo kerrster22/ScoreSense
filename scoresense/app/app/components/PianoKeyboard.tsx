@@ -14,6 +14,8 @@ interface PianoKeyboardProps {
   onModeChange?: (mode: "fit" | "scroll") => void
   onZoomChange?: (zoom: number) => void
   onScrollChange?: (scrollLeft: number, viewportWidth: number) => void
+  /** When true, hides the overlay Fit/Scroll/Zoom controls (they are in the sidebar instead) */
+  hideOverlayControls?: boolean
 }
 
 export function PianoKeyboard({
@@ -25,6 +27,7 @@ export function PianoKeyboard({
   onModeChange,
   onZoomChange,
   onScrollChange,
+  hideOverlayControls = false,
 }: PianoKeyboardProps) {
   const [modeLocal, setModeLocal] = useState<"fit" | "scroll">(modeProp ?? "fit")
   const [zoomLocal, setZoomLocal] = useState<number>(zoomProp ?? 1.2)
@@ -76,41 +79,43 @@ export function PianoKeyboard({
 
   return (
     <div className="relative overflow-hidden rounded-xl bg-secondary/40 ring-1 ring-border/40">
-      {/* Controls */}
-      <div className="absolute right-2 top-2 z-10 flex items-center gap-2 rounded-lg bg-background/70 px-2 py-1 backdrop-blur">
-        <button
-          onClick={() => setMode("fit")}
-          className={`text-xs font-semibold px-2 py-1 rounded-md transition ${
-            mode === "fit" ? "bg-accent text-background" : "bg-muted text-muted-foreground"
-          }`}
-        >
-          Fit
-        </button>
-        <button
-          onClick={() => setMode("scroll")}
-          className={`text-xs font-semibold px-2 py-1 rounded-md transition ${
-            mode === "scroll" ? "bg-accent text-background" : "bg-muted text-muted-foreground"
-          }`}
-        >
-          Scroll
-        </button>
+      {/* Controls (hidden when sidebar manages them) */}
+      {!hideOverlayControls && (
+        <div className="absolute right-2 top-2 z-10 flex items-center gap-2 rounded-lg bg-background/70 px-2 py-1 backdrop-blur">
+          <button
+            onClick={() => setMode("fit")}
+            className={`text-xs font-semibold px-2 py-1 rounded-md transition ${
+              mode === "fit" ? "bg-accent text-accent-foreground" : "bg-muted text-muted-foreground"
+            }`}
+          >
+            Fit
+          </button>
+          <button
+            onClick={() => setMode("scroll")}
+            className={`text-xs font-semibold px-2 py-1 rounded-md transition ${
+              mode === "scroll" ? "bg-accent text-accent-foreground" : "bg-muted text-muted-foreground"
+            }`}
+          >
+            Scroll
+          </button>
 
-        <div className="hidden sm:flex items-center gap-2 pl-1">
-          <span className="text-[10px] text-muted-foreground">
-            Zoom{mode === "fit" ? " (Scroll)" : ""}
-          </span>
-          <input
-            type="range"
-            min={0.8}
-            max={2.0}
-            step={0.05}
-            value={zoom}
-            disabled={mode === "fit"}
-            onChange={(e) => setZoom(Number(e.target.value))}
-            className={`w-24 accent-[currentColor] ${mode === "fit" ? "opacity-40 cursor-not-allowed" : ""}`}
-          />
+          <div className="hidden sm:flex items-center gap-2 pl-1">
+            <span className="text-[10px] text-muted-foreground">
+              Zoom{mode === "fit" ? " (Scroll)" : ""}
+            </span>
+            <input
+              type="range"
+              min={0.8}
+              max={2.0}
+              step={0.05}
+              value={zoom}
+              disabled={mode === "fit"}
+              onChange={(e) => setZoom(Number(e.target.value))}
+              className={`w-24 accent-[currentColor] ${mode === "fit" ? "opacity-40 cursor-not-allowed" : ""}`}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Keyboard bed */}
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-background/28 to-transparent" />
