@@ -1,15 +1,34 @@
 "use client"
 
-import React, { useState, useEffect, useCallback, useRef } from "react"
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import * as Tone from "tone"
 
 // Components
 import { AppTopNav } from "./components/AppTopNav"
 import { UploadCard } from "./components/UploadCard"
 import { ConversionStatusCard } from "./components/ConversionStatusCard"
-import { TutorialPlayer } from "./components/TutorialPlayer"
-import { PatternInsights } from "./components/PatternInsights"
-import { LessonsPanel } from "./components/LessonsPanel"
+import { PlayerStageCard } from "./components/PlayerStageCard"
+import { SidebarControls } from "./components/SidebarControls"
+import { LessonsTab } from "./components/LessonsTab"
+import { InsightsTab } from "./components/InsightsTab"
+
+// UI
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Separator } from "@/components/ui/separator"
+
+// Icons
+import {
+  Music,
+  Play,
+  BookOpen,
+  Lightbulb,
+  Upload,
+  Timer,
+  Clock,
+  Hand,
+} from "lucide-react"
 
 // Types
 import type {
@@ -38,13 +57,13 @@ import { analyzePiece, ALGO_VERSION } from "./lib/practiceAnalysis"
 import {
   computePieceHash,
   loadPieceData,
-  savePieceData,
   addNamedLoop,
   deleteNamedLoop,
   saveLastPosition,
   getCachedAnalysis,
   cacheAnalysis,
 } from "./lib/persistence"
+import { filterNotesByVisualHand, filterNotesByAudioHand, computeActiveKeys } from "./lib/handFilter"
 
 // ============================================================================
 // Constants / Mock Data
@@ -119,29 +138,36 @@ const FALLBACK_PATTERN_INSIGHTS: PatternInsight[] = [
 ]
 
 // ============================================================================
+// Helper: format seconds -> m:ss
+// ============================================================================
+function fmtDuration(sec: number): string {
+  const m = Math.floor(sec / 60)
+  const s = Math.floor(sec % 60)
+  return `${m}:${s.toString().padStart(2, "0")}`
+}
+
+// ============================================================================
 // Main Page Component
 // ============================================================================
 
 export default function AppPage() {
-  // Upload state
+  // ---------- Upload state ----------
   const [file, setFile] = useState<UploadedFile | null>(null)
   const [isDragging, setIsDragging] = useState(false)
 
-  // Conversion state
+  // ---------- Conversion state ----------
   const [isConverting, setIsConverting] = useState(false)
   const [conversionStep, setConversionStep] = useState(0)
   const [conversionProgress, setConversionProgress] = useState(0)
   const [isComplete, setIsComplete] = useState(false)
 
-  // MIDI state
+  // ---------- MIDI / MusicXML state ----------
   const [midiUrl, setMidiUrl] = useState<string | null>(null)
   const midiState = useMidi(midiUrl)
-
-  // MusicXML state (NEW) – used for correct hand assignment via staff
   const [musicXmlUrl, setMusicXmlUrl] = useState<string | null>(null)
   const musicXmlState = useMusicXml(musicXmlUrl)
 
-  // Player state
+  // ---------- Player state ----------
   const [isPlaying, setIsPlaying] = useState(false)
   const [tempo, setTempo] = useState(75)
   const [metronomeOn, setMetronomeOn] = useState(false)
@@ -149,53 +175,54 @@ export default function AppPage() {
   const [handSelection, setHandSelection] = useState("both")
   const [currentLoop, setCurrentLoop] = useState<LoopRange | null>(null)
 
-  // Visual aids
+  // ---------- Visual aids ----------
   const [showNoteNames, setShowNoteNames] = useState(true)
   const [showKeyLabels, setShowKeyLabels] = useState(false)
 
-  // Hand audio/visual modes
+  // ---------- Hand modes ----------
   const [handAudioMode, setHandAudioMode] = useState<HandAudioMode>("both")
   const [handVisualMode, setHandVisualMode] = useState<HandVisualMode>("both")
 
-  // Analysis & lessons state
+  // ---------- Analysis & lessons ----------
   const [segments, setSegments] = useState<Segment[]>([])
   const [lessons, setLessons] = useState<Lesson[]>([])
   const [patternInsights, setPatternInsights] = useState<PatternInsight[]>([])
   const [currentSegmentId, setCurrentSegmentId] = useState<string | null>(null)
   const [autoPlayOnSelect, setAutoPlayOnSelect] = useState(true)
 
-  // Named loops & persistence
+  // ---------- Current lesson (for "Now Learning" banner) ----------
+  const [currentLessonTitle, setCurrentLessonTitle] = useState<string | null>(null)
+
+  // ---------- Named loops & persistence ----------
   const [namedLoops, setNamedLoops] = useState<NamedLoop[]>([])
   const [pieceHash, setPieceHash] = useState<string | null>(null)
 
-  // Animation state
+  // ---------- Animation state ----------
   const [playbackTime, setPlaybackTime] = useState(0)
-  const [activeKeys, setActiveKeys] = useState<string[]>([])
   const animationRef = useRef<number>(null)
-  const lastTimeRef = useRef<number>(0)
 
-  // Audio engine state
+  // ---------- Audio engine ----------
   const [audioEngineState, setAudioEngineState] = useState<PianoAudioEngineState>({
     status: "loading",
     error: null,
   })
   const audioEngineRef = useRef(getPianoAudioEngine())
 
-  // -------------------------------------------------------------------------
-  // Derived: Notes for player
-  // Priority:
-  // 1) MusicXML (hands are correct: staff -> hand)
-  // 2) MIDI (fallback, but hands are NOT reliable)
-  // 3) Mock
-  // -------------------------------------------------------------------------
+  // ---------- Tab state ----------
+  const [activeTab, setActiveTab] = useState("player")
 
-  // Hybrid pipeline: prefer combined alignment of MIDI timing + MusicXML semantics
+  // ---------- View controls (lifted to page for sidebar) ----------
+  const [keyboardMode, setKeyboardMode] = useState<"fit" | "scroll">("fit")
+  const [keyboardZoom, setKeyboardZoom] = useState<number>(1.2)
+
+  // =========================================================================
+  // Derived: Notes for player
+  // =========================================================================
   const hybrid = useHybridScore({ midiUrl, xmlUrl: musicXmlUrl })
 
-  const notesForPlayer: Note[] = React.useMemo(() => {
+  const notesForPlayer: Note[] = useMemo(() => {
     if (hybrid.status === "ready" || hybrid.status === "midi-only" || hybrid.status === "xml-only") {
-      const evts = hybrid.events
-      return evts.map((e, idx) => ({
+      return hybrid.events.map((e) => ({
         id: e.id,
         note: e.noteName,
         midi: e.midi,
@@ -209,22 +236,48 @@ export default function AppPage() {
         source: e.source,
       }))
     }
-
     return MOCK_NOTES
   }, [hybrid])
 
-  // Determine playback length (prefer MIDI duration, else MusicXML duration)
-  const playbackDuration = React.useMemo(() => {
+  const playbackDuration = useMemo(() => {
     if (midiState.status === "ready") return midiState.duration
     if (musicXmlState.status === "ready") return musicXmlState.duration
     return 8
   }, [midiState, musicXmlState])
 
-  // -------------------------------------------------------------------------
-  // File Upload Handlers
-  // -------------------------------------------------------------------------
+  // =========================================================================
+  // Consistent hand filtering using shared helper
+  // =========================================================================
+  const visuallyFilteredNotes = useMemo(
+    () => filterNotesByVisualHand(notesForPlayer, handVisualMode),
+    [notesForPlayer, handVisualMode]
+  )
 
-  // Initialize audio engine on mount
+  // The handSelection prop for the visualizer: derive from handVisualMode
+  const handSelectionForVisualizer = useMemo(() => {
+    switch (handVisualMode) {
+      case "right-only": return "right"
+      case "left-only": return "left"
+      default: return "both"
+    }
+  }, [handVisualMode])
+
+  // Active keys: computed from visually filtered notes only
+  const activeKeys = useMemo(
+    () => computeActiveKeys(visuallyFilteredNotes, playbackTime),
+    [visuallyFilteredNotes, playbackTime]
+  )
+
+  // =========================================================================
+  // Metadata for header
+  // =========================================================================
+  const pieceName = isComplete ? "Demo Piece" : "No piece loaded"
+  const composerName = isComplete ? "Unknown Composer" : ""
+  const bpm = midiState.status === "ready" && midiState.bpm ? Math.round(midiState.bpm) : null
+
+  // =========================================================================
+  // Audio engine init
+  // =========================================================================
   useEffect(() => {
     const engine = audioEngineRef.current
     const initEngine = async () => {
@@ -237,18 +290,12 @@ export default function AppPage() {
         console.error("Audio engine failed to load:", errMsg)
       }
     }
-    
     initEngine()
-
-    return () => {
-      // Keep engine alive on unmount (don't dispose)
-    }
   }, [])
 
-  // -------------------------------------------------------------------------
+  // =========================================================================
   // File Upload Handlers
-  // -------------------------------------------------------------------------
-
+  // =========================================================================
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
@@ -278,21 +325,17 @@ export default function AppPage() {
     setFile(null)
   }, [])
 
-  // -------------------------------------------------------------------------
+  // =========================================================================
   // Conversion Handlers
-  // -------------------------------------------------------------------------
-
+  // =========================================================================
   const startConversion = useCallback(() => {
     if (!file) return
     setIsConverting(true)
     setConversionStep(1)
     setConversionProgress(0)
     setIsComplete(false)
-
-    // reset sources until “conversion” completes
     setMidiUrl(null)
     setMusicXmlUrl(null)
-
     setIsPlaying(false)
     setPlaybackTime(0)
   }, [file])
@@ -302,71 +345,47 @@ export default function AppPage() {
     setConversionStep(0)
     setConversionProgress(0)
     setIsComplete(false)
-
     setMidiUrl(null)
     setMusicXmlUrl(null)
-
     setIsPlaying(false)
     setPlaybackTime(0)
   }, [])
 
-  // Conversion animation effect
   useEffect(() => {
     if (!isConverting) return
-
     const interval = setInterval(() => {
       setConversionProgress((prev) => {
         const newProgress = prev + 2
-
         if (newProgress >= 100) {
           setIsConverting(false)
           setIsComplete(true)
-
-          // ✅ For now, “conversion” just loads demo files from /public
-          // Make sure these files exist:
-          // /public/demo3.mid
-          // /public/demo3.musicxml  (or .xml)
           setMidiUrl("/demo10.mid")
           setMusicXmlUrl("/demo10.mxl")
-
           clearInterval(interval)
           return 100
         }
-
         if (newProgress >= 75) setConversionStep(4)
         else if (newProgress >= 50) setConversionStep(3)
         else if (newProgress >= 25) setConversionStep(2)
-
         return newProgress
       })
     }, 160)
-
     return () => clearInterval(interval)
   }, [isConverting])
 
-  // -------------------------------------------------------------------------
+  // =========================================================================
   // Player Handlers
-  // -------------------------------------------------------------------------
-
+  // =========================================================================
   const handlePlayPause = useCallback(async () => {
     const engine = audioEngineRef.current
-    if (engine.getState().status !== "ready") {
-      console.warn("Cannot play: audio engine not ready")
-      return
-    }
-
+    if (engine.getState().status !== "ready") return
     try {
       if (isPlaying) {
-        // Pause
         engine.pause()
         setIsPlaying(false)
-        console.log("Playback paused")
       } else {
-        // Play—must be inside the click handler to satisfy browser autoplay policy
-        console.log("Starting playback...")
         await engine.play()
         setIsPlaying(true)
-        console.log("Playback started")
       }
     } catch (err) {
       console.error("Play/pause error:", err)
@@ -380,43 +399,25 @@ export default function AppPage() {
       engine.stop()
       setPlaybackTime(0)
       setIsPlaying(false)
-      console.log("Playback reset")
     } catch (err) {
       console.error("Reset error:", err)
     }
   }, [])
 
-  const handleMetronomeToggle = useCallback(() => {
-    setMetronomeOn((prev) => !prev)
-  }, [])
+  const handleMetronomeToggle = useCallback(() => setMetronomeOn((p) => !p), [])
 
   const handleTempoChange = useCallback((value: number) => {
     setTempo(value)
-    // Apply tempo to audio engine immediately
-    const engine = audioEngineRef.current
-    engine.setTempo(value)
-    console.log(`Tempo changed to ${value}%`)
+    audioEngineRef.current.setTempo(value)
   }, [])
 
   const handleTestTone = useCallback(async () => {
     const engine = audioEngineRef.current
-    if (engine.getState().status !== "ready") {
-      console.warn("Audio engine not ready for test tone")
-      return
-    }
-
+    if (engine.getState().status !== "ready") return
     try {
-      console.log("Testing audio: playing C4 for 1 second...")
-      // Ensure audio context is initialized
       await Tone.start()
-      // Get the sampler and play a note
       const sampler = (engine as any).sampler
-      if (!sampler) {
-        console.error("Sampler not available")
-        return
-      }
-      sampler.triggerAttackRelease("C4", 1)
-      console.log("Test tone played successfully")
+      if (sampler) sampler.triggerAttackRelease("C4", 1)
     } catch (err) {
       console.error("Test tone error:", err)
     }
@@ -424,63 +425,44 @@ export default function AppPage() {
 
   const handleLoopChange = useCallback((value: string) => {
     setLoopSelection(value)
-    const engine = audioEngineRef.current
     if (value === "off") {
       setCurrentLoop(null)
-      engine.setLoop({ enabled: false })
+      audioEngineRef.current.setLoop({ enabled: false })
     }
   }, [])
 
-  const handleHandChange = useCallback((value: string) => {
-    setHandSelection(value)
-  }, [])
+  const handleHandChange = useCallback((value: string) => setHandSelection(value), [])
 
   const handleClearLoop = useCallback(() => {
     setCurrentLoop(null)
     setLoopSelection("off")
-    const engine = audioEngineRef.current
-    engine.setLoop({ enabled: false })
+    audioEngineRef.current.setLoop({ enabled: false })
   }, [])
 
   const handlePracticeSection = useCallback((start: number, end: number) => {
     setCurrentLoop({ start, end })
     setLoopSelection("custom")
-    const engine = audioEngineRef.current
-    engine.setLoop({ enabled: true, startSec: start, endSec: end })
+    audioEngineRef.current.setLoop({ enabled: true, startSec: start, endSec: end })
+    setActiveTab("player") // switch to player tab
   }, [])
 
-  /**
-   * Seek to a specific position in the piece (seconds).
-   * If currently playing, playback continues from the new position.
-   * If paused, the visual position updates but stays paused.
-   */
   const handleSeek = useCallback((seconds: number) => {
-    const engine = audioEngineRef.current
-    engine.seek(seconds, { resume: isPlaying })
+    audioEngineRef.current.seek(seconds, { resume: isPlaying })
     setPlaybackTime(seconds)
   }, [isPlaying])
 
   // Set notes to audio engine based on handAudioMode
   useEffect(() => {
     const engine = audioEngineRef.current
-    const filteredNotes = notesForPlayer
-      .filter((note) => {
-        switch (handAudioMode) {
-          case "right-only": return note.hand === "right"
-          case "left-only": return note.hand === "left"
-          case "mute-right": return note.hand !== "right"
-          case "mute-left": return note.hand !== "left"
-          default: return true
-        }
-      })
+    const filtered = filterNotesByAudioHand(notesForPlayer, handAudioMode)
       .map((note) => ({
         ...note,
         id: typeof note.id === "string" ? parseInt(note.id, 10) : note.id,
       }))
-    engine.setNotes(filteredNotes)
+    engine.setNotes(filtered)
   }, [notesForPlayer, handAudioMode])
 
-  // Playback animation effect: sync playbackTime with audio engine
+  // Playback animation
   useEffect(() => {
     if (!isPlaying || !isComplete) {
       if (animationRef.current) {
@@ -489,37 +471,25 @@ export default function AppPage() {
       }
       return
     }
-
     const animate = () => {
       try {
         const engine = audioEngineRef.current
-
-        // Check loop wrap first (may seek back to loop start)
         engine.tickLoop()
-
         const currentTime = engine.getTime()
-        
-        // Update playbackTime from audio engine (single source of truth)
         setPlaybackTime(currentTime)
-
-        // Stop if we've reached the end (only when not looping)
         if (!engine.isLooping() && currentTime >= playbackDuration) {
           engine.stop()
           setPlaybackTime(0)
           setIsPlaying(false)
           return
         }
-
-        // Continue animation
         animationRef.current = requestAnimationFrame(animate)
       } catch (err) {
         console.error("Animation frame error:", err)
         setIsPlaying(false)
       }
     }
-
     animationRef.current = requestAnimationFrame(animate)
-
     return () => {
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current)
@@ -528,55 +498,24 @@ export default function AppPage() {
     }
   }, [isPlaying, isComplete, playbackDuration])
 
-  // Update active keys based on playback time and visual hand mode
-  useEffect(() => {
-    const filteredNotes = notesForPlayer.filter((note) => {
-      switch (handVisualMode) {
-        case "right-only": return note.hand === "right"
-        case "left-only": return note.hand === "left"
-        default: return true
-      }
-    })
-
-    const active = filteredNotes
-      .filter((note) => playbackTime >= note.startTime && playbackTime < note.startTime + note.duration)
-      .map((note) => note.note)
-
-    setActiveKeys(active)
-  }, [playbackTime, handVisualMode, notesForPlayer])
-
-  // -------------------------------------------------------------------------
+  // =========================================================================
   // Analysis + Persistence
-  // -------------------------------------------------------------------------
-
-  // Compute piece hash and load persisted data when notes change
+  // =========================================================================
   useEffect(() => {
     if (notesForPlayer.length === 0 || notesForPlayer === MOCK_NOTES) return
-
     const hash = computePieceHash(
-      notesForPlayer.map((n) => ({
-        midi: 0, // We use note name; stub midi
-        startTime: n.startTime,
-      }))
+      notesForPlayer.map((n) => ({ midi: 0, startTime: n.startTime }))
     )
     setPieceHash(hash)
-
-    // Load persisted named loops
     const persisted = loadPieceData(hash)
     setNamedLoops(persisted.namedLoops)
-
-    // Restore last position (only if not playing)
     if (persisted.lastPositionSec > 0 && !isPlaying) {
       setPlaybackTime(persisted.lastPositionSec)
     }
   }, [notesForPlayer])
 
-  // Run analysis when musicXml is ready (or use cached)
   useEffect(() => {
-    if (musicXmlState.status !== "ready") return
-    if (!pieceHash) return
-
-    // Try cache first
+    if (musicXmlState.status !== "ready" || !pieceHash) return
     const cached = getCachedAnalysis(pieceHash, ALGO_VERSION)
     if (cached) {
       setSegments(cached.segments)
@@ -584,34 +523,25 @@ export default function AppPage() {
       setPatternInsights(cached.insights)
       return
     }
-
-    // Run fresh analysis
     const result = analyzePiece(musicXmlState.events as any, musicXmlState.measureMap)
     setSegments(result.segments)
     setLessons(result.lessons)
     setPatternInsights(result.insights)
-
-    // Cache it
     cacheAnalysis(pieceHash, ALGO_VERSION, result.segments, result.lessons, result.insights)
   }, [musicXmlState, pieceHash])
 
-  // Periodically save playback position (every 2s while playing)
   useEffect(() => {
     if (!pieceHash || !isPlaying) return
-    const interval = setInterval(() => {
-      saveLastPosition(pieceHash, playbackTime)
-    }, 2000)
+    const interval = setInterval(() => saveLastPosition(pieceHash, playbackTime), 2000)
     return () => clearInterval(interval)
   }, [pieceHash, isPlaying, playbackTime])
 
-  // -------------------------------------------------------------------------
+  // =========================================================================
   // Measure map helpers
-  // -------------------------------------------------------------------------
-
+  // =========================================================================
   const measureMap = musicXmlState.status === "ready" ? musicXmlState.measureMap : []
   const totalBars = measureMap.length
 
-  /** Convert bar numbers to seconds using the measure map */
   const barsToSeconds = useCallback(
     (startBar: number, endBar: number): { startSec: number; endSec: number } | null => {
       const startEntry = measureMap.find((m) => m.measure === startBar)
@@ -622,18 +552,16 @@ export default function AppPage() {
     [measureMap]
   )
 
-  // -------------------------------------------------------------------------
+  // =========================================================================
   // Named loop handlers
-  // -------------------------------------------------------------------------
-
+  // =========================================================================
   const handleSetBarLoop = useCallback(
     (startBar: number, endBar: number) => {
       const range = barsToSeconds(startBar, endBar)
       if (!range) return
       setCurrentLoop({ start: startBar, end: endBar })
       setLoopSelection("custom")
-      const engine = audioEngineRef.current
-      engine.setLoop({ enabled: true, startSec: range.startSec, endSec: range.endSec })
+      audioEngineRef.current.setLoop({ enabled: true, startSec: range.startSec, endSec: range.endSec })
     },
     [barsToSeconds]
   )
@@ -670,65 +598,129 @@ export default function AppPage() {
     (loop: NamedLoop) => {
       setCurrentLoop({ start: loop.startBar, end: loop.endBar })
       setLoopSelection("custom")
-      const engine = audioEngineRef.current
-      engine.setLoop({ enabled: true, startSec: loop.startSec, endSec: loop.endSec })
+      audioEngineRef.current.setLoop({ enabled: true, startSec: loop.startSec, endSec: loop.endSec })
     },
     []
   )
 
-  // -------------------------------------------------------------------------
+  // =========================================================================
   // Segment / Lesson navigation
-  // -------------------------------------------------------------------------
-
+  // =========================================================================
   const handleSelectSegment = useCallback(
     (segment: Segment) => {
       setCurrentSegmentId(segment.id)
-      // Seek to start and optionally loop
       const engine = audioEngineRef.current
       engine.seek(segment.startSec, { resume: autoPlayOnSelect && isPlaying })
       engine.setLoop({ enabled: true, startSec: segment.startSec, endSec: segment.endSec })
       setCurrentLoop({ start: segment.startBar, end: segment.endBar })
       setLoopSelection("custom")
       setPlaybackTime(segment.startSec)
-
-      // Auto-play if enabled and not already playing
-      if (autoPlayOnSelect && !isPlaying) {
-        handlePlayPause()
-      }
+      if (autoPlayOnSelect && !isPlaying) handlePlayPause()
     },
     [autoPlayOnSelect, isPlaying, handlePlayPause]
   )
 
-  const handleNextSegment = useCallback(() => {
-    if (segments.length === 0) return
-    const currentIdx = segments.findIndex((s) => s.id === currentSegmentId)
-    const nextIdx = currentIdx < segments.length - 1 ? currentIdx + 1 : 0
-    handleSelectSegment(segments[nextIdx])
-  }, [segments, currentSegmentId, handleSelectSegment])
+  const handleStartLesson = useCallback(
+    (lesson: Lesson | null, segment?: Segment) => {
+      if (segment) {
+        setCurrentLessonTitle(segment.title)
+        handleSelectSegment(segment)
+      } else {
+        setCurrentLessonTitle(null)
+      }
+      setActiveTab("player")
+    },
+    [handleSelectSegment]
+  )
 
-  const handlePrevSegment = useCallback(() => {
-    if (segments.length === 0) return
-    const currentIdx = segments.findIndex((s) => s.id === currentSegmentId)
-    const prevIdx = currentIdx > 0 ? currentIdx - 1 : segments.length - 1
-    handleSelectSegment(segments[prevIdx])
-  }, [segments, currentSegmentId, handleSelectSegment])
-
-  const handleAutoPlayToggle = useCallback(() => {
-    setAutoPlayOnSelect((prev) => !prev)
-  }, [])
-
-  // -------------------------------------------------------------------------
+  // =========================================================================
   // Render
-  // -------------------------------------------------------------------------
-
+  // =========================================================================
   return (
     <div className="min-h-screen bg-background">
       <AppTopNav />
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Left Column - Workflow */}
-          <div className="lg:col-span-4 space-y-6">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* =============================================================== */}
+        {/* TOP HEADER */}
+        {/* =============================================================== */}
+        <header className="mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-bold text-foreground tracking-tight">
+                Piano Tutorial
+              </h1>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-sm text-muted-foreground">{pieceName}</span>
+                {composerName && (
+                  <>
+                    <span className="text-muted-foreground/40">{"/"}</span>
+                    <span className="text-sm text-muted-foreground">{composerName}</span>
+                  </>
+                )}
+              </div>
+              {/* Metadata badges */}
+              {isComplete && (
+                <div className="flex items-center gap-2 mt-2.5">
+                  {bpm && (
+                    <Badge variant="secondary" className="text-xs gap-1">
+                      <Timer className="h-3 w-3" />
+                      {bpm} BPM
+                    </Badge>
+                  )}
+                  <Badge variant="secondary" className="text-xs gap-1">
+                    <Clock className="h-3 w-3" />
+                    {fmtDuration(playbackDuration)}
+                  </Badge>
+                  <Badge variant="secondary" className="text-xs gap-1">
+                    <Hand className="h-3 w-3" />
+                    {handVisualMode === "both" ? "Both Hands" : handVisualMode === "right-only" ? "Right Hand" : "Left Hand"}
+                  </Badge>
+                  <Badge variant="secondary" className="text-xs gap-1">
+                    <Music className="h-3 w-3" />
+                    {notesForPlayer.length} notes
+                  </Badge>
+                </div>
+              )}
+            </div>
+
+            {/* Right side: primary actions */}
+            <div className="flex items-center gap-2">
+              {!isComplete && !isConverting && (
+                <label>
+                  <input
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                  />
+                  <Button variant="outline" size="sm" asChild>
+                    <span className="cursor-pointer gap-1.5">
+                      <Upload className="h-3.5 w-3.5" />
+                      Upload
+                    </span>
+                  </Button>
+                </label>
+              )}
+              {isComplete && (
+                <Button
+                  size="sm"
+                  onClick={handlePlayPause}
+                  className="gap-1.5"
+                >
+                  {isPlaying ? "Pause" : "Play"}
+                  <Play className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+          </div>
+        </header>
+
+        {/* =============================================================== */}
+        {/* PRE-CONVERSION: Upload + Conversion Status */}
+        {/* =============================================================== */}
+        {!isComplete && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
             <UploadCard
               file={file}
               isDragging={isDragging}
@@ -741,7 +733,6 @@ export default function AppPage() {
               onFileRemove={handleFileRemove}
               onStartConversion={startConversion}
             />
-
             <ConversionStatusCard
               steps={CONVERSION_STEPS}
               currentStep={conversionStep}
@@ -751,121 +742,118 @@ export default function AppPage() {
               onCancel={cancelConversion}
             />
           </div>
+        )}
 
-          {/* Right Column - Tutorial Player */}
-          <div className="lg:col-span-8 space-y-3">
-            {/* Audio Engine Debug Panel */}
-            {isComplete && (
-              <div className="text-xs bg-secondary/40 border border-border/50 rounded p-3 space-y-1">
-                <div className="font-semibold text-foreground">🎹 Audio Engine</div>
-                <div className="text-muted-foreground space-y-0.5">
-                  <div>Status: {audioEngineState.status} {audioEngineState.status === "ready" && "✅"}</div>
-                  {audioEngineState.error && <div className="text-red-400">Error: {audioEngineState.error}</div>}
-                  <div>Playback rate: {((tempo / 100) * 0.75).toFixed(3)}x (tempo {tempo})</div>
-                  <div>Time: {playbackTime.toFixed(2)}s / {playbackDuration.toFixed(2)}s</div>
-                  <div>Notes: {notesForPlayer.length} total • First: {notesForPlayer[0]?.note} @ {notesForPlayer[0]?.startTime}s</div>
-                </div>
+        {/* =============================================================== */}
+        {/* MAIN TABS */}
+        {/* =============================================================== */}
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="mb-6 bg-secondary/60 border border-border/40">
+            <TabsTrigger value="player" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
+              <Play className="h-3.5 w-3.5" />
+              Player
+            </TabsTrigger>
+            <TabsTrigger value="lessons" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
+              <BookOpen className="h-3.5 w-3.5" />
+              Lessons
+            </TabsTrigger>
+            <TabsTrigger value="insights" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
+              <Lightbulb className="h-3.5 w-3.5" />
+              Insights
+            </TabsTrigger>
+          </TabsList>
+
+          {/* --------------------------------------------------------------- */}
+          {/* PLAYER TAB */}
+          {/* --------------------------------------------------------------- */}
+          <TabsContent value="player">
+            <div className="flex flex-col lg:flex-row gap-6">
+              {/* Main: Stage */}
+              <div className="flex-1 min-w-0">
+                <PlayerStageCard
+                  notes={notesForPlayer}
+                  pianoKeys={PIANO_KEYS}
+                  isComplete={isComplete}
+                  playbackTime={playbackTime}
+                  handSelection={handSelectionForVisualizer}
+                  showNoteNames={showNoteNames}
+                  showKeyLabels={showKeyLabels}
+                  currentLoop={currentLoop}
+                  tempo={tempo}
+                  activeKeys={activeKeys}
+                  currentLessonTitle={currentLessonTitle}
+                />
               </div>
-            )}
 
-            {/* Debug readout */}
-            {(midiUrl || musicXmlUrl) && (
-              <div className="text-xs text-muted-foreground space-y-1">
-                {musicXmlUrl && musicXmlState.status === "loading" && <div>Loading MusicXML…</div>}
-                {musicXmlUrl && musicXmlState.status === "error" && (
-                  <div className="text-red-400">MusicXML error: {musicXmlState.error}</div>
-                )}
-                {musicXmlUrl && musicXmlState.status === "ready" && (
-                  <div>
-                    MusicXML: Loaded {musicXmlState.events.length} notes • Duration{" "}
-                    {musicXmlState.duration.toFixed(1)}s • Hands from staff ✅
-                  </div>
-                )}
-
-                {midiUrl && midiState.status === "loading" && <div>Loading MIDI…</div>}
-                {midiUrl && midiState.status === "error" && (
-                  <div className="text-red-400">MIDI error: {midiState.error}</div>
-                )}
-                {midiUrl && midiState.status === "ready" && (
-                  <div>
-                    MIDI: Loaded {midiState.events.length} notes • Duration {midiState.duration.toFixed(1)}s
-                    {midiState.bpm ? ` • BPM ~${Math.round(midiState.bpm)}` : ""}
-                  </div>
-                )}
-                {/* Hybrid alignment status */}
-                {(midiUrl || musicXmlUrl) && (
-                  <div>
-                    Hybrid: {hybrid.status}
-                    {hybrid.status === "ready" && (
-                      <span> • Matched {hybrid.stats?.matchedCount ?? 0}/{hybrid.stats?.midiCount ?? 0} • Avg conf {((hybrid.stats?.averageConfidence ?? 0)*100).toFixed(0)}%</span>
-                    )}
-                  </div>
-                )}
+              {/* Sidebar: Controls */}
+              <div className="lg:w-80 flex-shrink-0">
+                <SidebarControls
+                  isComplete={isComplete}
+                  isPlaying={isPlaying}
+                  playbackTime={playbackTime}
+                  playbackDuration={playbackDuration}
+                  tempo={tempo}
+                  metronomeOn={metronomeOn}
+                  currentLoop={currentLoop}
+                  onPlayPause={handlePlayPause}
+                  onReset={handleReset}
+                  onMetronomeToggle={handleMetronomeToggle}
+                  onTempoChange={handleTempoChange}
+                  onClearLoop={handleClearLoop}
+                  onSeek={handleSeek}
+                  onTestTone={handleTestTone}
+                  loopSelection={loopSelection}
+                  handSelection={handSelection}
+                  loopOptions={LOOP_OPTIONS}
+                  handOptions={HAND_OPTIONS}
+                  onLoopChange={handleLoopChange}
+                  onHandChange={handleHandChange}
+                  totalBars={totalBars}
+                  onSetBarLoop={handleSetBarLoop}
+                  namedLoops={namedLoops}
+                  onSaveLoop={handleSaveNamedLoop}
+                  onDeleteLoop={handleDeleteNamedLoop}
+                  onSelectNamedLoop={handleSelectNamedLoop}
+                  handAudioMode={handAudioMode}
+                  handVisualMode={handVisualMode}
+                  onHandAudioModeChange={setHandAudioMode}
+                  onHandVisualModeChange={setHandVisualMode}
+                  showNoteNames={showNoteNames}
+                  showKeyLabels={showKeyLabels}
+                  onShowNoteNamesChange={setShowNoteNames}
+                  onShowKeyLabelsChange={setShowKeyLabels}
+                  keyboardMode={keyboardMode}
+                  keyboardZoom={keyboardZoom}
+                  onKeyboardModeChange={setKeyboardMode}
+                  onKeyboardZoomChange={setKeyboardZoom}
+                />
               </div>
-            )}
-
-            <div className="space-y-6">
-              <TutorialPlayer
-                notes={notesForPlayer}
-                pianoKeys={PIANO_KEYS}
-                loopOptions={LOOP_OPTIONS}
-                handOptions={HAND_OPTIONS}
-                isComplete={isComplete}
-                isPlaying={isPlaying}
-                playbackTime={playbackTime}
-                playbackDuration={playbackDuration}
-                activeKeys={activeKeys}
-                tempo={tempo}
-                metronomeOn={metronomeOn}
-                loopSelection={loopSelection}
-                handSelection={handSelection}
-                currentLoop={currentLoop}
-                showNoteNames={showNoteNames}
-                showKeyLabels={showKeyLabels}
-                onPlayPause={handlePlayPause}
-                onReset={handleReset}
-                onMetronomeToggle={handleMetronomeToggle}
-                onTempoChange={handleTempoChange}
-                onLoopChange={handleLoopChange}
-                onHandChange={handleHandChange}
-                onClearLoop={handleClearLoop}
-                onSeek={handleSeek}
-                onShowNoteNamesChange={setShowNoteNames}
-                onShowKeyLabelsChange={setShowKeyLabels}
-                onTestTone={handleTestTone}
-                // New props for enhanced practice controls
-                totalBars={totalBars}
-                onSetBarLoop={handleSetBarLoop}
-                namedLoops={namedLoops}
-                onSaveLoop={handleSaveNamedLoop}
-                onDeleteLoop={handleDeleteNamedLoop}
-                onSelectNamedLoop={handleSelectNamedLoop}
-                handAudioMode={handAudioMode}
-                handVisualMode={handVisualMode}
-                onHandAudioModeChange={setHandAudioMode}
-                onHandVisualModeChange={setHandVisualMode}
-              />
-
-              <LessonsPanel
-                lessons={lessons}
-                segments={segments}
-                currentSegmentId={currentSegmentId}
-                isComplete={isComplete}
-                autoPlayOnSelect={autoPlayOnSelect}
-                onSelectSegment={handleSelectSegment}
-                onNextSegment={handleNextSegment}
-                onPrevSegment={handlePrevSegment}
-                onAutoPlayToggle={handleAutoPlayToggle}
-              />
-
-              <PatternInsights
-                insights={patternInsights.length > 0 ? patternInsights : FALLBACK_PATTERN_INSIGHTS}
-                isComplete={isComplete}
-                onPracticeSection={handlePracticeSection}
-              />
             </div>
-          </div>
-        </div>
+          </TabsContent>
+
+          {/* --------------------------------------------------------------- */}
+          {/* LESSONS TAB */}
+          {/* --------------------------------------------------------------- */}
+          <TabsContent value="lessons">
+            <LessonsTab
+              lessons={lessons}
+              segments={segments}
+              isComplete={isComplete}
+              onStartLesson={handleStartLesson}
+            />
+          </TabsContent>
+
+          {/* --------------------------------------------------------------- */}
+          {/* INSIGHTS TAB */}
+          {/* --------------------------------------------------------------- */}
+          <TabsContent value="insights">
+            <InsightsTab
+              insights={patternInsights.length > 0 ? patternInsights : FALLBACK_PATTERN_INSIGHTS}
+              isComplete={isComplete}
+              onPracticeSection={handlePracticeSection}
+            />
+          </TabsContent>
+        </Tabs>
       </main>
     </div>
   )
