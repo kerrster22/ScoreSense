@@ -290,6 +290,7 @@ export default function AppPage() {
         console.error("Audio engine failed to load:", errMsg)
       }
     }
+
     initEngine()
   }, [])
 
@@ -359,8 +360,14 @@ export default function AppPage() {
         if (newProgress >= 100) {
           setIsConverting(false)
           setIsComplete(true)
-          setMidiUrl("/demo10.mid")
-          setMusicXmlUrl("/demo10.mxl")
+
+          // ✅ For now, “conversion” just loads demo files from /public
+          // Make sure these files exist:
+          // /public/demo3.mid
+          // /public/demo3.musicxml  (or .xml)
+          setMidiUrl("/demo3.mid")
+          setMusicXmlUrl("/demo9.mxl")
+
           clearInterval(interval)
           return 100
         }
@@ -459,8 +466,15 @@ export default function AppPage() {
         ...note,
         id: typeof note.id === "string" ? parseInt(note.id, 10) : note.id,
       }))
-    engine.setNotes(filtered)
-  }, [notesForPlayer, handAudioMode])
+    
+    // Extract pedal events from hybrid state if available
+    let pedalEvents = undefined
+    if (hybrid.status === "ready" || hybrid.status === "midi-only") {
+      pedalEvents = hybrid.pedalEvents
+    }
+    
+    engine.setNotes(filteredNotes, pedalEvents)
+  }, [notesForPlayer, handAudioMode, hybrid])
 
   // Playback animation
   useEffect(() => {
@@ -476,6 +490,8 @@ export default function AppPage() {
         const engine = audioEngineRef.current
         engine.tickLoop()
         const currentTime = engine.getTime()
+
+        // Update playbackTime from audio engine (single source of truth)
         setPlaybackTime(currentTime)
         if (!engine.isLooping() && currentTime >= playbackDuration) {
           engine.stop()
@@ -742,7 +758,24 @@ export default function AppPage() {
               onCancel={cancelConversion}
             />
           </div>
-        )}
+
+          {/* Right Column - Tutorial Player */}
+          <div className="lg:col-span-8 space-y-3">
+            {/* Audio Engine Debug Panel */}
+            {isComplete && (
+              <div className="text-xs bg-secondary/40 border border-border/50 rounded p-3 space-y-1">
+                <div className="font-semibold text-foreground">🎹 Audio Engine</div>
+                <div className="text-muted-foreground space-y-0.5">
+                  <div>Status: {audioEngineState.status} {audioEngineState.status === "ready" && "✅"}</div>
+                  {audioEngineState.error && <div className="text-red-400">Error: {audioEngineState.error}</div>}
+                  <div>Playback rate: {((tempo / 100) * 0.75).toFixed(3)}x (tempo {tempo})</div>
+                  <div>Sustain Pedal: {(hybrid.status === "ready" || hybrid.status === "midi-only") && hybrid.pedalEvents && hybrid.pedalEvents.length > 0 ? "Supported 🎵" : "N/A"}</div>
+                  <div>Time: {playbackTime.toFixed(2)}s / {playbackDuration.toFixed(2)}s</div>
+                  <div>Notes: {notesForPlayer.length} total • First: {notesForPlayer[0]?.note} @ {notesForPlayer[0]?.startTime}s</div>
+                </div>
+              </div>
+            )}
+            <div/>
 
         {/* =============================================================== */}
         {/* MAIN TABS */}

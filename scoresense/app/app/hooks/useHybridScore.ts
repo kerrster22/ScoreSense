@@ -5,6 +5,7 @@ import { useMidi } from "../lib/useMidi"
 import { useMusicXml } from "./useMusicXml"
 import { alignMidiWithMusicXml } from "../lib/hybrid/align"
 import type { MidiNoteEvent, XmlNoteEvent, UnifiedNoteEvent } from "../lib/hybrid/types"
+import type { PedalEvent } from "../lib/midi"
 
 type HybridState =
   | { status: "idle" }
@@ -14,8 +15,9 @@ type HybridState =
       events: UnifiedNoteEvent[]
       duration: number
       stats: any
+      pedalEvents?: PedalEvent[]
     }
-  | { status: "midi-only"; events: UnifiedNoteEvent[]; duration: number; stats: any }
+  | { status: "midi-only"; events: UnifiedNoteEvent[]; duration: number; stats: any; pedalEvents?: PedalEvent[] }
   | { status: "xml-only"; events: UnifiedNoteEvent[]; duration: number; stats: any }
   | { status: "error"; error: string }
 
@@ -62,7 +64,7 @@ export function useHybridScore(opts: { midiUrl?: string | null; xmlUrl?: string 
 
       const result = alignMidiWithMusicXml(midiEvents, xmlEvents)
       const duration = midiState.duration ?? xmlState.duration
-      setState({ status: "ready", events: result.events, duration, stats: result.stats })
+      setState({ status: "ready", events: result.events, duration, stats: result.stats, pedalEvents: midiState.pedalEvents })
       return
     }
 
@@ -74,11 +76,11 @@ export function useHybridScore(opts: { midiUrl?: string | null; xmlUrl?: string 
         noteName: e.name,
         startTime: e.time,
         duration: e.duration,
-        hand: e.midi <= 60 ? "left" : "right",
+        hand: (e.midi <= 60 ? "left" : "right") as "left" | "right",
         velocity: e.velocity,
         source: { midiId: e.id, xmlId: undefined, confidence: 0.25 },
       }))
-      setState({ status: "midi-only", events, duration: midiState.duration, stats: { midiCount: events.length } })
+      setState({ status: "midi-only", events, duration: midiState.duration, stats: { midiCount: events.length }, pedalEvents: midiState.pedalEvents })
       return
     }
 

@@ -207,7 +207,7 @@ function paintBgSprite(canvas: HTMLCanvasElement, w: number, h: number) {
 // =============================================================================
 
 interface HitEffect {
-  noteId: number; x: number; y: number; w: number; isRight: boolean
+  noteId: string | number; x: number; y: number; w: number; isRight: boolean
   startMs: number; phase: "attack" | "release" | "done"; peakAlpha: number
 }
 
@@ -228,7 +228,7 @@ function makeParticlePool(n: number): Particle[] {
   }))
 }
 
-function spawnHit(pool: HitEffect[], noteId: number, x: number, y: number, w: number, isRight: boolean, nowMs: number) {
+function spawnHit(pool: HitEffect[], noteId: string | number, x: number, y: number, w: number, isRight: boolean, nowMs: number) {
   for (const e of pool) { if (e.noteId === noteId && e.phase !== "done") return }
   for (const e of pool) {
     if (e.phase === "done") {
@@ -323,7 +323,7 @@ export function VisualizerPanel({
   const hitPool = useRef(makeHitPool(MAX_HIT_EFFECTS))
   const particlePool = useRef(makeParticlePool(MAX_PARTICLES))
   const glowRef = useRef<{ rh: HTMLCanvasElement; lh: HTMLCanvasElement } | null>(null)
-  const prevHits = useRef(new Set<number>())
+  const prevHits = useRef(new Set<string>())
   const bgRef = useRef<HTMLCanvasElement | null>(null)
   const bgSize = useRef({ w: 0, h: 0 })
 
@@ -494,7 +494,7 @@ export function VisualizerPanel({
       const startIdx = findStartIndex(filteredNotes, windowStart)
       const viewW = curVpW ?? w
 
-      const currentHitSet = new Set<number>()
+      const currentHitSet = new Set<string>()
       const glowSprites = glowRef.current
 
       for (let i = startIdx; i < filteredNotes.length; i++) {
@@ -533,9 +533,10 @@ export function VisualizerPanel({
 
         // Spawn bloom + particles (once per note-on)
         if (isHit) {
-          currentHitSet.add(n.id)
-          if (!prevHits.current.has(n.id)) {
-            spawnHit(hitPool.current, n.id, xC, hitLineY, ww, isRight, now)
+          const noteId = String(n.id)
+          currentHitSet.add(noteId)
+          if (!prevHits.current.has(noteId)) {
+            spawnHit(hitPool.current, noteId, xC, hitLineY, ww, isRight, now)
             emitParticles(particlePool.current, xC, hitLineY, ww, isRight, now)
           }
         }

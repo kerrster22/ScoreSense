@@ -10,6 +10,12 @@ export type NoteEvent = {
   track: number
 }
 
+export type PedalEvent = {
+  time: number
+  down: boolean
+  value: number // 0..127
+}
+
 function midiToNoteName(midi: number) {
   const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
   const pitch = names[midi % 12]
@@ -21,6 +27,7 @@ export async function loadMidiFromUrl(url: string): Promise<{
   events: NoteEvent[]
   duration: number
   bpm?: number
+  pedalEvents?: PedalEvent[]
 }> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`Failed to fetch MIDI: ${res.status}`)
@@ -46,10 +53,34 @@ export async function loadMidiFromUrl(url: string): Promise<{
 
   events.sort((a, b) => a.time - b.time || a.midi - b.midi)
 
+  // Extract sustain pedal (CC 64) events from all tracks
+  const pedalEventsRaw: PedalEvent[] = []
+  midi.tracks.forEach((track) => {
+    if (track.controlChanges[64]) {
+      track.controlChanges[64].forEach((cc) => {
+        pedalEventsRaw.push({
+          time: cc.time,
+          value: cc.value,
+          down: cc.value >= 64,
+        })
+      })
+    }
+  })
+
+  // De-duplicate and sort pedal events (only keep state changes)
+  const pedalEventsDeduplicated: PedalEvent[] = []
+  let lastDown: boolean | null = null
+  for (const evt of pedalEventsRaw.sort((a, b) => a.time - b.time)) {
+    if (evt.down !== lastDown) {
+      pedalEventsDeduplicated.push(evt)
+      lastDown = evt.down
+    }
+  }
+
   const duration = midi.duration
 
   // Optional: first tempo event if present
   const bpm = midi.header.tempos?.[0]?.bpm
 
-  return { events, duration, bpm }
+  return { events, duration, bpm, pedalEvents: pedalEventsDeduplicated }
 }

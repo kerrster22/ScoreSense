@@ -2,24 +2,19 @@
 
 import * as Tone from "tone"
 
-/**
- * PianoAudioEngine: Tone.js-based piano audio playback with sample-based synthesis
- * 
- * Key features:
- * - Uses Tone.Sampler with Salamander Grand Piano samples from CDN
- * - Schedules notes using Tone.Part for perfect timing
- * - Supports chords (multiple notes at same startTime)
- * - Keeps long notes visible and audible
- * - Tempo mapping: uiTempo 100 = 0.75x playback speed
- * - Transport.seconds is the single source of truth for time
- */
-
 export interface Note {
-  id?: number
+  id?: number | string
   note: string // e.g., "C4", "C#4", "Ab3"
   hand?: string
   startTime: number // in seconds
   duration: number // in seconds
+  velocity?: number
+}
+
+export type PedalEvent = {
+  time: number
+  down: boolean
+  value: number
 }
 
 type SamplingStatus = "loading" | "ready" | "error"
@@ -72,24 +67,35 @@ const SALAMANDER_SAMPLES: Record<string, string> = {
 const SALAMANDER_BASE_URL = "https://tonejs.github.io/audio/salamander/"
 
 /**
- * Main Piano Audio Engine
+ * Main Piano Audio Engine with sustain pedal support
  */
 export class PianoAudioEngine {
   private sampler: Tone.Sampler | null = null
-  private part: Tone.Part | null = null
+  private attackPart: Tone.Part | null = null
+  private releasePart: Tone.Part | null = null
+  private pedalPart: Tone.Part | null = null
   private state: PianoAudioEngineState = {
     status: "loading",
     error: null,
   }
   private notes: Note[] = []
+  private pedalEvents: PedalEvent[] = []
   private basePlaybackRate: number = 1
   private uiTempo: number = 100
+
+  // Sustain pedal tracking
+  private pedalDown: boolean = false
+  private heldByPedal: Map<string, { releaseTime: number }> = new Map()
+  private heldCounts: Map<string, number> = new Map() // for note overlaps
 
   // Loop state
   private loopEnabled: boolean = false
   private loopStartSec: number = 0
   private loopEndSec: number = 0
-  private isLoopJumping: boolean = false // guard to prevent re-entrant loop wraps
+  private isLoopJumping: boolean = false
+
+  // Debug
+  private debug: boolean = false
 
   async load(): Promise<void> {
     try {
@@ -141,56 +147,143 @@ export class PianoAudioEngine {
   }
 
   /**
-   * Set notes to be played and reschedule them
+   * Set notes + optional pedal events and reschedule them
    */
-  setNotes(newNotes: Note[]): void {
+  setNotes(newNotes: Note[], pedalEvents?: PedalEvent[]): void {
     this.notes = newNotes
+    this.pedalEvents = pedalEvents ?? []
+    // Initialize pedal state from pedal events (what state is it in at t=0?)
+    this.pedalDown = this.pedalEvents.length > 0 && this.pedalEvents[0]?.down ? true : false
     this.scheduleNotes()
   }
 
   /**
-   * Internal: Schedule all notes using Tone.Part
-   * Notes are scheduled at adjusted times based on current playback rate
+   * Internal: Schedule all notes with optional sustain pedal support
+   * Creates separate attack and release scheduling with pedal-aware release times.
    */
   private scheduleNotes(): void {
-    // Cancel existing part
-    if (this.part) {
-      this.part.stop()
-      this.part.dispose()
+    // Cancel existing parts
+    if (this.attackPart) {
+      this.attackPart.stop()
+      this.attackPart.dispose()
+    }
+    if (this.releasePart) {
+      this.releasePart.stop()
+      this.releasePart.dispose()
+    }
+    if (this.pedalPart) {
+      this.pedalPart.stop()
+      this.pedalPart.dispose()
     }
 
     if (!this.sampler || this.notes.length === 0) return
 
-    // Group notes by startTime for chord handling
-    const events: Array<[number, Note[]]> = []
-    const timeMap = new Map<number, Note[]>()
+    // Build pedal state map: time -> isDown
+    const pedalStateMap = new Map<number, boolean>()
+    for (const pe of this.pedalEvents) {
+      pedalStateMap.set(pe.time, pe.down)
+    }
 
-    // Apply playback rate scaling to scheduling times
-    // Higher rate = faster playback = schedule notes earlier (divide time by rate)
+    // ========= ATTACK SCHEDULING =========
+    // Group notes by startTime for chords
+    const attackEvents: Array<[number, Note[]]> = []
+    const attackTimeMap = new Map<number, Note[]>()
+
     for (const note of this.notes) {
       const scheduledTime = note.startTime / this.basePlaybackRate
-      if (!timeMap.has(scheduledTime)) {
-        timeMap.set(scheduledTime, [])
+      if (!attackTimeMap.has(scheduledTime)) {
+        attackTimeMap.set(scheduledTime, [])
       }
-      timeMap.get(scheduledTime)!.push(note)
+      attackTimeMap.get(scheduledTime)!.push(note)
     }
 
-    // Convert to sorted events array
-    for (const [time, notes] of Array.from(timeMap.entries()).sort((a, b) => a[0] - b[0])) {
-      events.push([time, notes])
+    for (const [time, notes] of Array.from(attackTimeMap.entries()).sort((a, b) => a[0] - b[0])) {
+      attackEvents.push([time, notes])
     }
 
-    // Create Part with all events
-    this.part = new Tone.Part((time, eventNotes: Note[]) => {
+    // Create attack Part
+    this.attackPart = new Tone.Part((time, eventNotes: Note[]) => {
       for (const note of eventNotes) {
-        // Also scale the duration by the playback rate
-        const scaledDuration = note.duration / this.basePlaybackRate
-        this.sampler!.triggerAttackRelease(note.note, scaledDuration, time)
+        const vel = note.velocity ?? 0.8
+        this.sampler!.triggerAttack(note.note, time, vel)
+        if (this.debug) console.log(`[Pedal] triggerAttack: ${note.note} at ${time.toFixed(3)}s`)
       }
-    }, events)
+    }, attackEvents)
 
-    // Start part when transport starts
-    this.part.start(0)
+    // ========= RELEASE SCHEDULING =========
+    // For each note, compute its release time (may be delayed by pedal)
+    const releaseEvents: Array<[number, Note[]]> = []
+    const releaseTimeMap = new Map<number, Note[]>()
+
+    for (const note of this.notes) {
+      const nominalReleaseTime = note.startTime + note.duration
+      let actualReleaseTime = nominalReleaseTime
+
+      // Check if pedal is down at the nominal release time
+      let pedalAtRelease = false
+      if (this.pedalEvents.length > 0) {
+        // Find the pedal state just before/at the release time
+        let lastPedalState = this.pedalDown // initial state at t=0
+        for (const pe of this.pedalEvents) {
+          if (pe.time <= nominalReleaseTime) {
+            lastPedalState = pe.down
+          } else {
+            break
+          }
+        }
+        pedalAtRelease = lastPedalState
+
+        // If pedal is down, find the next pedal-up event
+        if (pedalAtRelease) {
+          for (const pe of this.pedalEvents) {
+            if (pe.time > nominalReleaseTime && !pe.down) {
+              actualReleaseTime = pe.time
+              break
+            }
+          }
+        }
+      }
+
+      const scheduledReleaseTime = actualReleaseTime / this.basePlaybackRate
+      if (!releaseTimeMap.has(scheduledReleaseTime)) {
+        releaseTimeMap.set(scheduledReleaseTime, [])
+      }
+      releaseTimeMap.get(scheduledReleaseTime)!.push(note)
+    }
+
+    for (const [time, notes] of Array.from(releaseTimeMap.entries()).sort((a, b) => a[0] - b[0])) {
+      releaseEvents.push([time, notes])
+    }
+
+    // Create release Part
+    this.releasePart = new Tone.Part((time, eventNotes: Note[]) => {
+      for (const note of eventNotes) {
+        this.sampler!.triggerRelease(note.note, time)
+        if (this.debug) console.log(`[Pedal] triggerRelease: ${note.note} at ${time.toFixed(3)}s`)
+      }
+    }, releaseEvents)
+
+    // ========= PEDAL CHANGE SCHEDULING =========
+    // Schedule pedal changes to track state (for debugging)
+    const pedalChangeEvents: Array<[number, PedalEvent]> = []
+    for (const pe of this.pedalEvents) {
+      const scheduledTime = pe.time / this.basePlaybackRate
+      pedalChangeEvents.push([scheduledTime, pe])
+    }
+
+    this.pedalPart = new Tone.Part((time, evt: PedalEvent) => {
+      this.pedalDown = evt.down
+      if (this.debug) {
+        console.log(`[Pedal] State: ${evt.down ? "DOWN" : "UP"} at ${time.toFixed(3)}s (value: ${evt.value})`)
+      }
+    }, pedalChangeEvents)
+
+    // Start all parts when transport starts
+    this.attackPart.start(0)
+    this.releasePart.start(0)
+    if (pedalChangeEvents.length > 0) {
+      this.pedalPart.start(0)
+    }
   }
 
   /**
@@ -227,6 +320,17 @@ export class PianoAudioEngine {
     Tone.Transport.stop()
     Tone.Transport.cancel() // Cancel all scheduled notes
     Tone.Transport.seconds = 0
+    
+    // Release all held notes immediately
+    if (this.sampler) {
+      this.sampler.triggerRelease(Array.from(this.heldByPedal.keys()), 0)
+    }
+    
+    // Reset pedal state
+    this.pedalDown = false
+    this.heldByPedal.clear()
+    this.heldCounts.clear()
+    
     this.rescheduleNotes() // Re-schedule from the beginning
   }
 
@@ -375,19 +479,31 @@ export class PianoAudioEngine {
    * Dispose and cleanup
    */
   dispose(): void {
-    if (this.part) {
-      this.part.stop()
-      this.part.dispose()
-      this.part = null
+    if (this.attackPart) {
+      this.attackPart.stop()
+      this.attackPart.dispose()
+      this.attackPart = null
+    }
+    if (this.releasePart) {
+      this.releasePart.stop()
+      this.releasePart.dispose()
+      this.releasePart = null
+    }
+    if (this.pedalPart) {
+      this.pedalPart.stop()
+      this.pedalPart.dispose()
+      this.pedalPart = null
     }
     if (this.sampler) {
       this.sampler.dispose()
       this.sampler = null
     }
+    this.heldByPedal.clear()
+    this.heldCounts.clear()
   }
 
   /**
-   * Internal: Reschedule notes (used when resetting)
+   * Internal: Reschedule notes (used when resetting or seeking)
    */
   private rescheduleNotes(): void {
     this.scheduleNotes()
