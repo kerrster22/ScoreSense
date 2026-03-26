@@ -461,7 +461,7 @@ export default function AppPage() {
   // Set notes to audio engine based on handAudioMode
   useEffect(() => {
     const engine = audioEngineRef.current
-    const filtered = filterNotesByAudioHand(notesForPlayer, handAudioMode)
+    const filteredNotes = filterNotesByAudioHand(notesForPlayer, handAudioMode)
       .map((note) => ({
         ...note,
         id: typeof note.id === "string" ? parseInt(note.id, 10) : note.id,
@@ -758,29 +758,29 @@ export default function AppPage() {
               onCancel={cancelConversion}
             />
           </div>
+        )}
 
-          {/* Right Column - Tutorial Player */}
-          <div className="lg:col-span-8 space-y-3">
-            {/* Audio Engine Debug Panel */}
-            {isComplete && (
-              <div className="text-xs bg-secondary/40 border border-border/50 rounded p-3 space-y-1">
-                <div className="font-semibold text-foreground">🎹 Audio Engine</div>
-                <div className="text-muted-foreground space-y-0.5">
-                  <div>Status: {audioEngineState.status} {audioEngineState.status === "ready" && "✅"}</div>
-                  {audioEngineState.error && <div className="text-red-400">Error: {audioEngineState.error}</div>}
-                  <div>Playback rate: {((tempo / 100) * 0.75).toFixed(3)}x (tempo {tempo})</div>
-                  <div>Sustain Pedal: {(hybrid.status === "ready" || hybrid.status === "midi-only") && hybrid.pedalEvents && hybrid.pedalEvents.length > 0 ? "Supported 🎵" : "N/A"}</div>
-                  <div>Time: {playbackTime.toFixed(2)}s / {playbackDuration.toFixed(2)}s</div>
-                  <div>Notes: {notesForPlayer.length} total • First: {notesForPlayer[0]?.note} @ {notesForPlayer[0]?.startTime}s</div>
-                </div>
+        {/* Right Column - Tutorial Player */}
+        <div className="space-y-3">
+          {/* Audio Engine Debug Panel */}
+          {isComplete && (
+            <div className="text-xs bg-secondary/40 border border-border/50 rounded p-3 space-y-1">
+              <div className="font-semibold text-foreground">🎹 Audio Engine</div>
+              <div className="text-muted-foreground space-y-0.5">
+                <div>Status: {audioEngineState.status} {audioEngineState.status === "ready" && "✅"}</div>
+                {audioEngineState.error && <div className="text-red-400">Error: {audioEngineState.error}</div>}
+                <div>Playback rate: {((tempo / 100) * 0.75).toFixed(3)}x (tempo {tempo})</div>
+                <div>Sustain Pedal: {(hybrid.status === "ready" || hybrid.status === "midi-only") && hybrid.pedalEvents && hybrid.pedalEvents.length > 0 ? "Supported 🎵" : "N/A"}</div>
+                <div>Time: {playbackTime.toFixed(2)}s / {playbackDuration.toFixed(2)}s</div>
+                <div>Notes: {notesForPlayer.length} total • First: {notesForPlayer[0]?.note} @ {notesForPlayer[0]?.startTime}s</div>
               </div>
-            )}
-            <div/>
+            </div>
+          )}
 
-        {/* =============================================================== */}
-        {/* MAIN TABS */}
-        {/* =============================================================== */}
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          {/* =============================================================== */}
+          {/* MAIN TABS */}
+          {/* =============================================================== */}
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="mb-6 bg-secondary/60 border border-border/40">
             <TabsTrigger value="player" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
               <Play className="h-3.5 w-3.5" />
@@ -887,6 +887,7 @@ export default function AppPage() {
             />
           </TabsContent>
         </Tabs>
+            </div>
       </main>
     </div>
   )
