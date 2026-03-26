@@ -18,6 +18,11 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 
+// Piece library feature
+import { PieceLibrary } from "@/components/PieceLibrary"
+import { buildPieceLibrary, MOCK_PIECE_FILE_PATHS } from "@/lib/buildPieceLibrary"
+import type { ComposerGroup, PieceFile } from "@/types/pieces"
+
 // Icons
 import {
   Music,
@@ -214,6 +219,10 @@ export default function AppPage() {
   // ---------- View controls (lifted to page for sidebar) ----------
   const [keyboardMode, setKeyboardMode] = useState<"fit" | "scroll">("fit")
   const [keyboardZoom, setKeyboardZoom] = useState<number>(1.2)
+
+  // ---------- Piece library ----------
+  const [pieceLibrary, setPieceLibrary] = useState<ComposerGroup[]>([]) 
+  const [selectedPiece, setSelectedPiece] = useState<PieceFile | null>(null)
 
   // =========================================================================
   // Derived: Notes for player
@@ -457,6 +466,39 @@ export default function AppPage() {
     audioEngineRef.current.seek(seconds, { resume: isPlaying })
     setPlaybackTime(seconds)
   }, [isPlaying])
+
+  const handleSelectPiece = useCallback((piece: PieceFile) => {
+    setSelectedPiece(piece)
+
+    const midiUrl = piece.midiPath ? `/api/piece?path=${encodeURIComponent(piece.midiPath)}` : null
+    const xmlUrl = piece.xmlPath ? `/api/piece?path=${encodeURIComponent(piece.xmlPath)}` : null
+
+    setMidiUrl(midiUrl)
+    setMusicXmlUrl(xmlUrl)
+
+    setIsComplete(true)
+    setPlaybackTime(0)
+    setIsPlaying(false)
+  }, [])
+
+  useEffect(() => {
+    const loadLibrary = async () => {
+      try {
+        const response = await fetch("/api/pieces")
+        if (!response.ok) throw new Error(`Status ${response.status}`)
+        const data = await response.json()
+        if (data?.library) {
+          setPieceLibrary(data.library)
+        } else {
+          setPieceLibrary(buildPieceLibrary(MOCK_PIECE_FILE_PATHS))
+        }
+      } catch (err) {
+        console.error("Piece library fetch failed", err)
+        setPieceLibrary(buildPieceLibrary(MOCK_PIECE_FILE_PATHS))
+      }
+    }
+    loadLibrary()
+  }, [])
 
   // Set notes to audio engine based on handAudioMode
   useEffect(() => {
@@ -772,6 +814,9 @@ export default function AppPage() {
                 <div>Playback rate: {((tempo / 100) * 0.75).toFixed(3)}x (tempo {tempo})</div>
                 <div>Sustain Pedal: {(hybrid.status === "ready" || hybrid.status === "midi-only") && hybrid.pedalEvents && hybrid.pedalEvents.length > 0 ? "Supported 🎵" : "N/A"}</div>
                 <div>Time: {playbackTime.toFixed(2)}s / {playbackDuration.toFixed(2)}s</div>
+                {selectedPiece && (
+                  <div className="text-xs text-muted-foreground/80">Selected: {selectedPiece.filePath}</div>
+                )}
                 <div>Notes: {notesForPlayer.length} total • First: {notesForPlayer[0]?.note} @ {notesForPlayer[0]?.startTime}s</div>
               </div>
             </div>
@@ -818,8 +863,13 @@ export default function AppPage() {
                 />
               </div>
 
-              {/* Sidebar: Controls */}
-              <div className="lg:w-80 flex-shrink-0">
+              {/* Sidebar: Piece library + controls */}
+              <div className="lg:w-80 shrink-0 space-y-4">
+                <PieceLibrary
+                  pieces={pieceLibrary}
+                  selectedPiece={selectedPiece}
+                  onSelectPiece={handleSelectPiece}
+                />
                 <SidebarControls
                   isComplete={isComplete}
                   isPlaying={isPlaying}
