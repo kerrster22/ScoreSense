@@ -8,7 +8,9 @@ import { AppTopNav } from "./components/AppTopNav"
 import { UploadCard } from "./components/UploadCard"
 import { ConversionStatusCard } from "./components/ConversionStatusCard"
 import { PlayerStageCard } from "./components/PlayerStageCard"
+import { PieceTimeline } from "./components/PieceTimeline"
 import { SidebarControls } from "./components/SidebarControls"
+import { TutorialPlayerCard } from "./components/TutorialPlayerCard"
 import { LessonsTab } from "./components/LessonsTab"
 import { InsightsTab } from "./components/InsightsTab"
 
@@ -16,23 +18,32 @@ import { InsightsTab } from "./components/InsightsTab"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Separator } from "@/components/ui/separator"
 
 // Piece library feature
 import { PieceLibrary } from "@/components/PieceLibrary"
 import { buildPieceLibrary, MOCK_PIECE_FILE_PATHS } from "@/lib/buildPieceLibrary"
 import type { ComposerGroup, PieceFile } from "@/types/pieces"
 
+// Tutorial segment feature
+import { TutorialPanel } from "@/components/TutorialPanel"
+import { generateTutorialSegments } from "@/lib/tutorialSegments"
+import { useTutorialMode } from "@/hooks/useTutorialMode"
+import type { TutorialSegment } from "@/types/tutorial"
+
 // Icons
 import {
   Music,
   Play,
+  Pause,
+  RotateCcw,
   BookOpen,
   Lightbulb,
   Upload,
   Timer,
   Clock,
   Hand,
+  Repeat,
+  X as XIcon,
 } from "lucide-react"
 
 // Types
@@ -57,7 +68,7 @@ import { useMidi } from "./lib/useMidi"
 import { generateFullPianoKeys } from "./lib/piano"
 import { useMusicXml } from "./hooks/useMusicXml"
 import { useHybridScore } from "./hooks/useHybridScore"
-import { getPianoAudioEngine, type PianoAudioEngineState } from "./lib/pianoAudioEngine"
+import { getPianoAudioEngine } from "./lib/pianoAudioEngine"
 import { analyzePiece, ALGO_VERSION } from "./lib/practiceAnalysis"
 import {
   computePieceHash,
@@ -96,10 +107,10 @@ const MOCK_NOTES: Note[] = [
 const PIANO_KEYS: PianoKey[] = generateFullPianoKeys()
 
 const CONVERSION_STEPS: ConversionStep[] = [
-  { id: 1, label: "Rendering pages" },
-  { id: 2, label: "Reading notes (OMR)" },
-  { id: 3, label: "Building MIDI" },
-  { id: 4, label: "Preparing tutorial" },
+  { id: 1, label: "Reading file" },
+  { id: 2, label: "Parsing notes" },
+  { id: 3, label: "Building score" },
+  { id: 4, label: "Ready to play" },
 ]
 
 const LOOP_OPTIONS: LoopOption[] = [
@@ -159,6 +170,7 @@ export default function AppPage() {
   // ---------- Upload state ----------
   const [file, setFile] = useState<UploadedFile | null>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const blobUrlRef = useRef<string | null>(null)
 
   // ---------- Conversion state ----------
   const [isConverting, setIsConverting] = useState(false)
@@ -174,7 +186,7 @@ export default function AppPage() {
 
   // ---------- Player state ----------
   const [isPlaying, setIsPlaying] = useState(false)
-  const [tempo, setTempo] = useState(75)
+  const [tempo, setTempo] = useState(100)
   const [metronomeOn, setMetronomeOn] = useState(false)
   const [loopSelection, setLoopSelection] = useState("off")
   const [handSelection, setHandSelection] = useState("both")
@@ -192,8 +204,8 @@ export default function AppPage() {
   const [segments, setSegments] = useState<Segment[]>([])
   const [lessons, setLessons] = useState<Lesson[]>([])
   const [patternInsights, setPatternInsights] = useState<PatternInsight[]>([])
-  const [currentSegmentId, setCurrentSegmentId] = useState<string | null>(null)
-  const [autoPlayOnSelect, setAutoPlayOnSelect] = useState(true)
+  const [, setCurrentSegmentId] = useState<string | null>(null)
+  const [autoPlayOnSelect] = useState(true)
 
   // ---------- Current lesson (for "Now Learning" banner) ----------
   const [currentLessonTitle, setCurrentLessonTitle] = useState<string | null>(null)
@@ -207,27 +219,54 @@ export default function AppPage() {
   const animationRef = useRef<number>(null)
 
   // ---------- Audio engine ----------
-  const [audioEngineState, setAudioEngineState] = useState<PianoAudioEngineState>({
-    status: "loading",
-    error: null,
-  })
   const audioEngineRef = useRef(getPianoAudioEngine())
 
   // ---------- Tab state ----------
   const [activeTab, setActiveTab] = useState("player")
 
-  // ---------- View controls (lifted to page for sidebar) ----------
-  const [keyboardMode, setKeyboardMode] = useState<"fit" | "scroll">("fit")
-  const [keyboardZoom, setKeyboardZoom] = useState<number>(1.2)
+  // ---------- Shortcuts overlay ----------
+  const [showShortcuts, setShowShortcuts] = useState(false)
+
+  // ---------- Session timer ----------
+  const [sessionMinutes, setSessionMinutes] = useState(0)
+  const sessionStartRef = useRef<number>(Date.now())
+  useEffect(() => {
+    const today = new Date().toDateString()
+    const stored = typeof window !== "undefined" ? localStorage.getItem("ss_session_mins") : null
+    const parsed = stored ? JSON.parse(stored) : { date: today, mins: 0 }
+    const base = parsed.date === today ? parsed.mins : 0
+    setSessionMinutes(base)
+    const interval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - sessionStartRef.current) / 60000)
+      const total = base + elapsed
+      setSessionMinutes(total)
+      localStorage.setItem("ss_session_mins", JSON.stringify({ date: new Date().toDateString(), mins: total }))
+    }, 30000) // update every 30 s
+    return () => clearInterval(interval)
+  }, [])
 
   // ---------- Piece library ----------
   const [pieceLibrary, setPieceLibrary] = useState<ComposerGroup[]>([]) 
   const [selectedPiece, setSelectedPiece] = useState<PieceFile | null>(null)
 
+  // ---------- Tutorial mode ----------
+  const measureMap = musicXmlState.status === "ready" ? musicXmlState.measureMap : []
+
+  const tutorialSegments: TutorialSegment[] = useMemo(
+    () => generateTutorialSegments(segments, measureMap, musicXmlState.status === "ready" ? musicXmlState.events as any : null),
+    [segments, measureMap, musicXmlState]
+  )
+  const tutorialMode = useTutorialMode(tutorialSegments, { autoAdvance: false, replaySegment: false })
+  const [tutorialPlayerActive, setTutorialPlayerActive] = useState(false)
+
+  // No auto-selection — tutorial mode is opt-in (user clicks a segment to start)
+
   // =========================================================================
   // Derived: Notes for player
   // =========================================================================
   const hybrid = useHybridScore({ midiUrl, xmlUrl: musicXmlUrl })
+
+  const { activeSegment: activeTutorialSegment, state: tutorialState, hasNext: tutorialHasNext } = tutorialMode
 
   const notesForPlayer: Note[] = useMemo(() => {
     if (hybrid.status === "ready" || hybrid.status === "midi-only" || hybrid.status === "xml-only") {
@@ -280,9 +319,13 @@ export default function AppPage() {
   // =========================================================================
   // Metadata for header
   // =========================================================================
-  const pieceName = isComplete ? "Demo Piece" : "No piece loaded"
-  const composerName = isComplete ? "Unknown Composer" : ""
+  const pieceName = selectedPiece?.title
+    ?? (file?.name ? file.name.replace(/\.(mid|midi|musicxml|mxl|xml)$/i, "") : null)
+    ?? (isComplete ? "Untitled Piece" : null)
+  const composerName = selectedPiece?.composer ?? ""
   const bpm = midiState.status === "ready" && midiState.bpm ? Math.round(midiState.bpm) : null
+  // Actual BPM at current tempo setting
+  const actualBpm = bpm ? Math.round(bpm * (tempo / 100)) : null
 
   // =========================================================================
   // Audio engine init
@@ -292,10 +335,8 @@ export default function AppPage() {
     const initEngine = async () => {
       try {
         await engine.load()
-        setAudioEngineState({ status: "ready", error: null })
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : "Unknown error"
-        setAudioEngineState({ status: "error", error: errMsg })
         console.error("Audio engine failed to load:", errMsg)
       }
     }
@@ -310,15 +351,15 @@ export default function AppPage() {
     e.preventDefault()
     setIsDragging(false)
     const droppedFile = e.dataTransfer.files[0]
-    if (droppedFile && /\.(pdf|jpg|jpeg|png)$/i.test(droppedFile.name)) {
-      setFile({ name: droppedFile.name, size: droppedFile.size })
+    if (droppedFile && /\.(mid|midi|musicxml|mxl|xml)$/i.test(droppedFile.name)) {
+      setFile({ name: droppedFile.name, size: droppedFile.size, fileObject: droppedFile })
     }
   }, [])
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0]
     if (selectedFile) {
-      setFile({ name: selectedFile.name, size: selectedFile.size })
+      setFile({ name: selectedFile.name, size: selectedFile.size, fileObject: selectedFile })
     }
   }, [])
 
@@ -332,6 +373,10 @@ export default function AppPage() {
   }, [])
 
   const handleFileRemove = useCallback(() => {
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current)
+      blobUrlRef.current = null
+    }
     setFile(null)
   }, [])
 
@@ -340,17 +385,35 @@ export default function AppPage() {
   // =========================================================================
   const startConversion = useCallback(() => {
     if (!file) return
+
+    // Revoke any previous blob URL
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current)
+      blobUrlRef.current = null
+    }
+
+    const url = URL.createObjectURL(file.fileObject)
+    blobUrlRef.current = url
+
     setIsConverting(true)
-    setConversionStep(1)
-    setConversionProgress(0)
     setIsComplete(false)
     setMidiUrl(null)
     setMusicXmlUrl(null)
     setIsPlaying(false)
     setPlaybackTime(0)
+
+    if (/\.(mid|midi)$/i.test(file.name)) {
+      setMidiUrl(url)
+    } else {
+      setMusicXmlUrl(url)
+    }
   }, [file])
 
   const cancelConversion = useCallback(() => {
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current)
+      blobUrlRef.current = null
+    }
     setIsConverting(false)
     setConversionStep(0)
     setConversionProgress(0)
@@ -361,33 +424,17 @@ export default function AppPage() {
     setPlaybackTime(0)
   }, [])
 
+  // Watch hybrid status to know when parsing is done
   useEffect(() => {
     if (!isConverting) return
-    const interval = setInterval(() => {
-      setConversionProgress((prev) => {
-        const newProgress = prev + 2
-        if (newProgress >= 100) {
-          setIsConverting(false)
-          setIsComplete(true)
-
-          // ✅ For now, “conversion” just loads demo files from /public
-          // Make sure these files exist:
-          // /public/demo3.mid
-          // /public/demo3.musicxml  (or .xml)
-          setMidiUrl("/demo3.mid")
-          setMusicXmlUrl("/demo9.mxl")
-
-          clearInterval(interval)
-          return 100
-        }
-        if (newProgress >= 75) setConversionStep(4)
-        else if (newProgress >= 50) setConversionStep(3)
-        else if (newProgress >= 25) setConversionStep(2)
-        return newProgress
-      })
-    }, 160)
-    return () => clearInterval(interval)
-  }, [isConverting])
+    const { status } = hybrid
+    if (/^(ready|midi-only|xml-only)$/.test(status)) {
+      setIsConverting(false)
+      setIsComplete(true)
+    } else if (/^error$/.test(status)) {
+      setIsConverting(false)
+    }
+  }, [hybrid.status, isConverting])
 
   // =========================================================================
   // Player Handlers
@@ -415,6 +462,7 @@ export default function AppPage() {
       engine.stop()
       setPlaybackTime(0)
       setIsPlaying(false)
+      setTutorialPlayerActive(false)
     } catch (err) {
       console.error("Reset error:", err)
     }
@@ -468,13 +516,18 @@ export default function AppPage() {
   }, [isPlaying])
 
   const handleSelectPiece = useCallback((piece: PieceFile) => {
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current)
+      blobUrlRef.current = null
+    }
     setSelectedPiece(piece)
+    setFile(null)
 
-    const midiUrl = piece.midiPath ? `/api/piece?path=${encodeURIComponent(piece.midiPath)}` : null
-    const xmlUrl = piece.xmlPath ? `/api/piece?path=${encodeURIComponent(piece.xmlPath)}` : null
+    const pieceMidiUrl = piece.midiPath ? `/api/piece?path=${encodeURIComponent(piece.midiPath)}` : null
+    const pieceXmlUrl = piece.xmlPath ? `/api/piece?path=${encodeURIComponent(piece.xmlPath)}` : null
 
-    setMidiUrl(midiUrl)
-    setMusicXmlUrl(xmlUrl)
+    setMidiUrl(pieceMidiUrl)
+    setMusicXmlUrl(pieceXmlUrl)
 
     setIsComplete(true)
     setPlaybackTime(0)
@@ -518,7 +571,14 @@ export default function AppPage() {
     engine.setNotes(filteredNotes, pedalEvents)
   }, [notesForPlayer, handAudioMode, hybrid])
 
-  // Playback animation
+  // Tutorial segment loop control
+  useEffect(() => {
+    if (activeTutorialSegment) {
+      audioEngineRef.current.setLoop({ enabled: false })
+    }
+  }, [activeTutorialSegment])
+
+  // Playback animation and tutorial segment control
   useEffect(() => {
     if (!isPlaying || !isComplete) {
       if (animationRef.current) {
@@ -527,26 +587,65 @@ export default function AppPage() {
       }
       return
     }
+
     const animate = () => {
       try {
         const engine = audioEngineRef.current
         engine.tickLoop()
         const currentTime = engine.getTime()
 
-        // Update playbackTime from audio engine (single source of truth)
         setPlaybackTime(currentTime)
-        if (!engine.isLooping() && currentTime >= playbackDuration) {
+
+        // Only impose segment boundary when the user explicitly started a tutorial segment
+        const activeSeg = tutorialPlayerActive ? activeTutorialSegment : null
+        const segmentEnd = activeSeg ? activeSeg.endTime : playbackDuration
+
+        if (currentTime >= segmentEnd) {
+          if (activeSeg) {
+            tutorialMode.markComplete(activeSeg.id)
+          }
+
+          if (tutorialMode.state.replaySegment && activeSeg) {
+            engine.seek(activeSeg.startTime, { resume: true })
+            setPlaybackTime(activeSeg.startTime)
+            tutorialMode.setPlaybackMode("replay")
+            animationRef.current = requestAnimationFrame(animate)
+            return
+          } else if (tutorialState.autoAdvance && tutorialHasNext) {
+            const nextId = tutorialSegments[tutorialState.currentSegmentIndex + 1]?.id
+            if (nextId) {
+              tutorialMode.nextSegment()
+              const nextSeg = tutorialMode.activeSegment
+              if (nextSeg) {
+                engine.seek(nextSeg.startTime, { resume: true })
+                setPlaybackTime(nextSeg.startTime)
+                tutorialMode.setPlaybackMode("playing")
+              }
+            }
+          } else {
+            engine.pause()
+            setIsPlaying(false)
+            tutorialMode.setPlaybackMode("paused")
+          }
+
+          return
+        }
+
+        // If no tutorial mode in place, fall back to natural piece end
+        if (!activeSeg && currentTime >= playbackDuration) {
           engine.stop()
           setPlaybackTime(0)
           setIsPlaying(false)
           return
         }
+
         animationRef.current = requestAnimationFrame(animate)
       } catch (err) {
         console.error("Animation frame error:", err)
         setIsPlaying(false)
       }
     }
+
     animationRef.current = requestAnimationFrame(animate)
     return () => {
       if (animationRef.current) {
@@ -554,7 +653,7 @@ export default function AppPage() {
         animationRef.current = null
       }
     }
-  }, [isPlaying, isComplete, playbackDuration])
+  }, [isPlaying, isComplete, playbackDuration, tutorialPlayerActive, tutorialState.autoAdvance, tutorialState.replaySegment, tutorialState.currentSegmentIndex, tutorialHasNext, activeTutorialSegment?.id, tutorialSegments])
 
   // =========================================================================
   // Analysis + Persistence
@@ -594,11 +693,11 @@ export default function AppPage() {
     return () => clearInterval(interval)
   }, [pieceHash, isPlaying, playbackTime])
 
-  // =========================================================================
-  // Measure map helpers
-  // =========================================================================
-  const measureMap = musicXmlState.status === "ready" ? musicXmlState.measureMap : []
   const totalBars = measureMap.length
+  const currentBar = useMemo(
+    () => measureMap.find((m) => playbackTime >= m.startSec && playbackTime < m.endSec)?.measure ?? null,
+    [measureMap, playbackTime]
+  )
 
   const barsToSeconds = useCallback(
     (startBar: number, endBar: number): { startSec: number; endSec: number } | null => {
@@ -609,6 +708,14 @@ export default function AppPage() {
     },
     [measureMap]
   )
+
+  // Derive loop region in seconds for the timeline
+  const currentLoopSec = useMemo(() => {
+    if (!currentLoop || /^off$/.test(loopSelection)) return null
+    const r = barsToSeconds(currentLoop.start, currentLoop.end)
+    if (r) return r
+    return { startSec: currentLoop.start, endSec: currentLoop.end }
+  }, [currentLoop, loopSelection, barsToSeconds])
 
   // =========================================================================
   // Named loop handlers
@@ -623,6 +730,73 @@ export default function AppPage() {
     },
     [barsToSeconds]
   )
+
+  // Set loop from seconds (timeline drag — finds nearest bars when measureMap exists)
+  const handleSetTimeLoop = useCallback(
+    (startSec: number, endSec: number) => {
+      if (measureMap.length > 0) {
+        const startEntry = measureMap.reduce((best, m) =>
+          Math.abs(m.startSec - startSec) < Math.abs(best.startSec - startSec) ? m : best
+        )
+        const endEntry = measureMap.reduce((best, m) =>
+          Math.abs(m.endSec - endSec) < Math.abs(best.endSec - endSec) ? m : best
+        )
+        handleSetBarLoop(startEntry.measure, endEntry.measure)
+      } else {
+        setCurrentLoop({ start: startSec, end: endSec })
+        setLoopSelection("custom")
+        audioEngineRef.current.setLoop({ enabled: true, startSec, endSec })
+      }
+    },
+    [measureMap, handleSetBarLoop]
+  )
+
+  // Loop the single bar at current playback position
+  const handleLoopCurrentBar = useCallback(() => {
+    const m = measureMap.find((entry) => playbackTime >= entry.startSec && playbackTime < entry.endSec)
+    if (m) handleSetBarLoop(m.measure, m.measure)
+  }, [playbackTime, measureMap, handleSetBarLoop])
+
+  // Play a tutorial segment YouTube-style (play-through, no loop)
+  const handlePlaySegment = useCallback((seg: import("@/types/tutorial").TutorialSegment) => {
+    tutorialMode.selectSegment(seg.id)
+    audioEngineRef.current.setLoop({ enabled: false })
+    setCurrentLoop(null)
+    setLoopSelection("off")
+    audioEngineRef.current.seek(seg.startTime, { resume: true })
+    setPlaybackTime(seg.startTime)
+    setIsPlaying(true)
+    tutorialMode.setPlaybackMode("playing")
+    setTutorialPlayerActive(true)
+  }, [tutorialMode])
+
+  // Keyboard shortcuts — must be after all handlers are declared
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === "INPUT" || tag === "TEXTAREA") return
+      if (e.key === "?") { setShowShortcuts((v) => !v); return }
+      if (e.key === "Escape") { setShowShortcuts(false); return }
+      if (!isComplete) return
+      if (e.key === " " && !e.repeat) {
+        e.preventDefault(); handlePlayPause()
+      } else if (e.key === "l" || e.key === "L") {
+        handleLoopCurrentBar()
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault()
+        tutorialMode.nextSegment()
+        const next = tutorialMode.activeSegment
+        if (next) handlePlaySegment(next)
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault()
+        tutorialMode.prevSegment()
+        const prev = tutorialMode.activeSegment
+        if (prev) handlePlaySegment(prev)
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [isComplete, handlePlayPause, handleLoopCurrentBar, handlePlaySegment, tutorialMode])
 
   const handleSaveNamedLoop = useCallback(
     (name: string) => {
@@ -679,7 +853,7 @@ export default function AppPage() {
   )
 
   const handleStartLesson = useCallback(
-    (lesson: Lesson | null, segment?: Segment) => {
+    (_lesson: Lesson | null, segment?: Segment) => {
       if (segment) {
         setCurrentLessonTitle(segment.title)
         handleSelectSegment(segment)
@@ -703,23 +877,24 @@ export default function AppPage() {
         {/* TOP HEADER */}
         {/* =============================================================== */}
         <header className="mb-6">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <div>
-              <h1 className="text-2xl font-bold text-foreground tracking-tight">
-                Piano Tutorial
-              </h1>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="text-sm text-muted-foreground">{pieceName}</span>
-                {composerName && (
-                  <>
-                    <span className="text-muted-foreground/40">{"/"}</span>
-                    <span className="text-sm text-muted-foreground">{composerName}</span>
-                  </>
-                )}
-              </div>
-              {/* Metadata badges */}
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+            <div className="min-w-0">
+              {!isComplete ? (
+                <h1 className="text-2xl font-bold text-foreground tracking-tight">ScoreSense</h1>
+              ) : (
+                <>
+                  <h1 className="text-2xl font-bold text-foreground tracking-tight truncate">
+                    {pieceName}
+                  </h1>
+                  {composerName && (
+                    <p className="text-sm text-muted-foreground mt-0.5">{composerName}</p>
+                  )}
+                </>
+              )}
+
+              {/* Ambient metadata + loop pill + hand badge */}
               {isComplete && (
-                <div className="flex items-center gap-2 mt-2.5">
+                <div className="flex flex-wrap items-center gap-2 mt-2.5">
                   {bpm && (
                     <Badge variant="secondary" className="text-xs gap-1">
                       <Timer className="h-3 w-3" />
@@ -731,45 +906,57 @@ export default function AppPage() {
                     {fmtDuration(playbackDuration)}
                   </Badge>
                   <Badge variant="secondary" className="text-xs gap-1">
-                    <Hand className="h-3 w-3" />
-                    {handVisualMode === "both" ? "Both Hands" : handVisualMode === "right-only" ? "Right Hand" : "Left Hand"}
-                  </Badge>
-                  <Badge variant="secondary" className="text-xs gap-1">
                     <Music className="h-3 w-3" />
                     {notesForPlayer.length} notes
                   </Badge>
+                  {sessionMinutes >= 1 && (
+                    <Badge variant="secondary" className="text-xs gap-1 tabular-nums">
+                      <Clock className="h-3 w-3" />
+                      {sessionMinutes} min today
+                    </Badge>
+                  )}
+                  {currentLoop && (
+                    <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-accent/15 border border-accent/30 text-accent text-xs font-medium">
+                      <Repeat className="h-3 w-3" />
+                      Bars {currentLoop.start}–{currentLoop.end}
+                      <button
+                        type="button"
+                        onClick={handleClearLoop}
+                        className="hover:bg-accent/20 rounded-full p-0.5 transition-colors"
+                      >
+                        <XIcon className="h-2.5 w-2.5" />
+                      </button>
+                    </div>
+                  )}
+                  {handVisualMode !== "both" && (
+                    <Badge
+                      variant="secondary"
+                      className={`text-xs gap-1 border ${handVisualMode === "right-only" ? "border-pink-500/40 text-pink-400" : "border-purple-500/40 text-purple-400"}`}
+                    >
+                      <Hand className="h-3 w-3" />
+                      {handVisualMode === "right-only" ? "R Hand" : "L Hand"}
+                    </Badge>
+                  )}
                 </div>
               )}
             </div>
 
-            {/* Right side: primary actions */}
-            <div className="flex items-center gap-2">
-              {!isComplete && !isConverting && (
-                <label>
-                  <input
-                    type="file"
-                    accept=".pdf,.jpg,.jpeg,.png"
-                    onChange={handleFileSelect}
-                    className="hidden"
-                  />
-                  <Button variant="outline" size="sm" asChild>
-                    <span className="cursor-pointer gap-1.5">
-                      <Upload className="h-3.5 w-3.5" />
-                      Upload
-                    </span>
-                  </Button>
-                </label>
-              )}
-              {isComplete && (
-                <Button
-                  size="sm"
-                  onClick={handlePlayPause}
-                  className="gap-1.5"
-                >
-                  {isPlaying ? "Pause" : "Play"}
-                  <Play className="h-3.5 w-3.5" />
+            {/* Right side: upload / change piece */}
+            <div className="flex items-center gap-2 shrink-0">
+              <label>
+                <input
+                  type="file"
+                  accept=".mid,.midi,.musicxml,.mxl,.xml"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <Button variant={isComplete ? "ghost" : "outline"} size="sm" asChild>
+                  <span className="cursor-pointer gap-1.5 text-muted-foreground">
+                    <Upload className="h-3.5 w-3.5" />
+                    {isComplete ? "Change piece" : "Upload file"}
+                  </span>
                 </Button>
-              )}
+              </label>
             </div>
           </div>
         </header>
@@ -804,24 +991,6 @@ export default function AppPage() {
 
         {/* Right Column - Tutorial Player */}
         <div className="space-y-3">
-          {/* Audio Engine Debug Panel */}
-          {isComplete && (
-            <div className="text-xs bg-secondary/40 border border-border/50 rounded p-3 space-y-1">
-              <div className="font-semibold text-foreground">🎹 Audio Engine</div>
-              <div className="text-muted-foreground space-y-0.5">
-                <div>Status: {audioEngineState.status} {audioEngineState.status === "ready" && "✅"}</div>
-                {audioEngineState.error && <div className="text-red-400">Error: {audioEngineState.error}</div>}
-                <div>Playback rate: {((tempo / 100) * 0.75).toFixed(3)}x (tempo {tempo})</div>
-                <div>Sustain Pedal: {(hybrid.status === "ready" || hybrid.status === "midi-only") && hybrid.pedalEvents && hybrid.pedalEvents.length > 0 ? "Supported 🎵" : "N/A"}</div>
-                <div>Time: {playbackTime.toFixed(2)}s / {playbackDuration.toFixed(2)}s</div>
-                {selectedPiece && (
-                  <div className="text-xs text-muted-foreground/80">Selected: {selectedPiece.filePath}</div>
-                )}
-                <div>Notes: {notesForPlayer.length} total • First: {notesForPlayer[0]?.note} @ {notesForPlayer[0]?.startTime}s</div>
-              </div>
-            </div>
-          )}
-
           {/* =============================================================== */}
           {/* MAIN TABS */}
           {/* =============================================================== */}
@@ -847,28 +1016,155 @@ export default function AppPage() {
           <TabsContent value="player">
             <div className="flex flex-col lg:flex-row gap-6">
               {/* Main: Stage */}
-              <div className="flex-1 min-w-0">
+              <div className="flex-1 min-w-0 space-y-3">
+                {/* grid-rows trick: slides in/out without a layout jump */}
+                <div
+                  className="grid transition-all duration-300 ease-in-out"
+                  style={{ gridTemplateRows: tutorialPlayerActive && activeTutorialSegment ? "1fr" : "0fr" }}
+                >
+                  <div className="overflow-hidden">
+                    {activeTutorialSegment && (
+                      <div className="pb-3">
+                        <TutorialPlayerCard
+                          segment={activeTutorialSegment}
+                          playbackTime={playbackTime}
+                          isPlaying={isPlaying}
+                          hasNext={tutorialHasNext}
+                          hasPrev={tutorialState.currentSegmentIndex > 0}
+                          onPlayPause={handlePlayPause}
+                          onNext={() => {
+                            tutorialMode.nextSegment()
+                            const next = tutorialMode.activeSegment
+                            if (next) handlePlaySegment(next)
+                          }}
+                          onPrev={() => {
+                            tutorialMode.prevSegment()
+                            const prev = tutorialMode.activeSegment
+                            if (prev) handlePlaySegment(prev)
+                          }}
+                          onClose={() => setTutorialPlayerActive(false)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <PlayerStageCard
                   notes={notesForPlayer}
                   pianoKeys={PIANO_KEYS}
                   isComplete={isComplete}
                   playbackTime={playbackTime}
                   handSelection={handSelectionForVisualizer}
+                  handVisualMode={handVisualMode}
                   showNoteNames={showNoteNames}
                   showKeyLabels={showKeyLabels}
                   currentLoop={currentLoop}
                   tempo={tempo}
                   activeKeys={activeKeys}
                   currentLessonTitle={currentLessonTitle}
+                  loopEndTimeSec={currentLoopSec?.endSec}
                 />
+                {isComplete && notesForPlayer.length > 0 && (
+                  <PieceTimeline
+                    notes={visuallyFilteredNotes}
+                    duration={playbackDuration}
+                    playbackTime={playbackTime}
+                    loopStartSec={currentLoopSec ? currentLoopSec.startSec : null}
+                    loopEndSec={currentLoopSec ? currentLoopSec.endSec : null}
+                    measureMap={measureMap}
+                    patternInsights={patternInsights}
+                    onSeek={handleSeek}
+                    onSetTimeLoop={handleSetTimeLoop}
+                  />
+                )}
+
+                {/* Inline transport bar — sits below the timeline */}
+                {isComplete && (
+                  <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-border/50 bg-card/50 backdrop-blur-sm">
+                    <button
+                      type="button"
+                      onClick={handleReset}
+                      className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                      aria-label="Reset to start"
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePlayPause}
+                      className="h-9 w-9 rounded-full bg-accent text-accent-foreground flex items-center justify-center hover:bg-accent/90 transition-colors shrink-0"
+                      aria-label={isPlaying ? "Pause" : "Play"}
+                    >
+                      {isPlaying
+                        ? <Pause className="h-4 w-4" />
+                        : <Play className="h-4 w-4 ml-0.5" />}
+                    </button>
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <span className="text-xs text-muted-foreground shrink-0">Tempo</span>
+                      <input
+                        type="range"
+                        min={25}
+                        max={100}
+                        step={5}
+                        value={tempo}
+                        onChange={(e) => handleTempoChange(Number(e.target.value))}
+                        className="flex-1 accent-accent min-w-0"
+                      />
+                      <span className="text-xs font-medium text-foreground tabular-nums shrink-0 w-28 text-right">
+                        {tempo}%{actualBpm ? ` · ${actualBpm} BPM` : ""}
+                      </span>
+                    </div>
+                    <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                      {fmtDuration(playbackTime)} / {fmtDuration(playbackDuration)}
+                    </span>
+                  </div>
+                )}
               </div>
 
-              {/* Sidebar: Piece library + controls */}
+              {/* Sidebar: Piece library + tutorial + controls */}
               <div className="lg:w-80 shrink-0 space-y-4">
                 <PieceLibrary
                   pieces={pieceLibrary}
                   selectedPiece={selectedPiece}
                   onSelectPiece={handleSelectPiece}
+                  defaultCollapsed={isComplete}
+                />
+                <TutorialPanel
+                  segments={tutorialSegments}
+                  notes={notesForPlayer}
+                  tutorialState={tutorialMode.state}
+                  activeSegment={activeTutorialSegment}
+                  playbackTime={playbackTime}
+                  onPlaySegment={handlePlaySegment}
+                  onSelectSegment={(id) => {
+                    tutorialMode.selectSegment(id)
+                    const seg = tutorialSegments.find((s) => s.id === id)
+                    if (seg) {
+                      audioEngineRef.current.seek(seg.startTime, { resume: false })
+                      setPlaybackTime(seg.startTime)
+                      setIsPlaying(false)
+                    }
+                  }}
+                  onNext={() => {
+                    tutorialMode.nextSegment()
+                    const next = tutorialMode.activeSegment
+                    if (next) {
+                      audioEngineRef.current.seek(next.startTime, { resume: false })
+                      setPlaybackTime(next.startTime)
+                      setIsPlaying(false)
+                    }
+                  }}
+                  onPrev={() => {
+                    tutorialMode.prevSegment()
+                    const prev = tutorialMode.activeSegment
+                    if (prev) {
+                      audioEngineRef.current.seek(prev.startTime, { resume: false })
+                      setPlaybackTime(prev.startTime)
+                      setIsPlaying(false)
+                    }
+                  }}
+                  onMarkComplete={tutorialMode.markComplete}
+                  onToggleAutoAdvance={tutorialMode.toggleAutoAdvance}
+                  onToggleReplaySegment={tutorialMode.toggleReplaySegment}
                 />
                 <SidebarControls
                   isComplete={isComplete}
@@ -893,6 +1189,8 @@ export default function AppPage() {
                   onHandChange={handleHandChange}
                   totalBars={totalBars}
                   onSetBarLoop={handleSetBarLoop}
+                  onLoopCurrentBar={handleLoopCurrentBar}
+                  currentBar={currentBar ?? undefined}
                   namedLoops={namedLoops}
                   onSaveLoop={handleSaveNamedLoop}
                   onDeleteLoop={handleDeleteNamedLoop}
@@ -905,10 +1203,6 @@ export default function AppPage() {
                   showKeyLabels={showKeyLabels}
                   onShowNoteNamesChange={setShowNoteNames}
                   onShowKeyLabelsChange={setShowKeyLabels}
-                  keyboardMode={keyboardMode}
-                  keyboardZoom={keyboardZoom}
-                  onKeyboardModeChange={setKeyboardMode}
-                  onKeyboardZoomChange={setKeyboardZoom}
                 />
               </div>
             </div>
@@ -939,6 +1233,50 @@ export default function AppPage() {
         </Tabs>
             </div>
       </main>
+
+      {/* Keyboard shortcuts overlay */}
+      {showShortcuts && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowShortcuts(false)}
+        >
+          <div
+            className="w-80 rounded-2xl border border-border/60 bg-card/95 backdrop-blur-sm shadow-2xl p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-foreground">Keyboard Shortcuts</h2>
+              <button
+                type="button"
+                onClick={() => setShowShortcuts(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="space-y-2">
+              {[
+                ["Space", "Play / Pause"],
+                ["L", "Loop current bar"],
+                ["→", "Next segment"],
+                ["←", "Previous segment"],
+                ["?", "Toggle this overlay"],
+                ["Esc", "Close overlay"],
+              ].map(([key, desc]) => (
+                <div key={key} className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">{desc}</span>
+                  <kbd className="inline-flex items-center px-2 py-0.5 rounded-md bg-secondary border border-border/60 text-xs font-mono text-foreground">
+                    {key}
+                  </kbd>
+                </div>
+              ))}
+            </div>
+            <p className="mt-4 text-[10px] text-muted-foreground/60 text-center">
+              Shortcuts are disabled when an input is focused
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

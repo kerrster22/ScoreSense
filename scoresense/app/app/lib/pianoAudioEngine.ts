@@ -64,13 +64,17 @@ const SALAMANDER_SAMPLES: Record<string, string> = {
   "C8": "C8.mp3",
 }
 
-const SALAMANDER_BASE_URL = "https://tonejs.github.io/audio/salamander/"
+const SALAMANDER_BASE_URL = "/salamander/"
 
 /**
  * Main Piano Audio Engine with sustain pedal support
  */
 export class PianoAudioEngine {
   private sampler: Tone.Sampler | null = null
+  private compressor: Tone.Compressor | null = null
+  private eq: Tone.EQ3 | null = null
+  private reverb: Tone.Reverb | null = null
+  private limiter: Tone.Limiter | null = null
   private attackPart: Tone.Part | null = null
   private releasePart: Tone.Part | null = null
   private pedalPart: Tone.Part | null = null
@@ -103,15 +107,29 @@ export class PianoAudioEngine {
       // Browsers block AudioContext creation outside a user gesture.
       // Tone.start() is called in play() which runs inside a click handler.
 
-      console.log("Loading Salamander Grand Piano samples from CDN...")
+      console.log("Loading Salamander Grand Piano samples...")
 
-      // Create sampler with CDN-hosted Salamander samples
+      // Build the audio graph: sampler → compressor → reverb → limiter → destination
+      // Compressor prevents level buildup when many pedal-sustained notes accumulate.
+      // Reverb wet is kept low to avoid tails from different notes washing together.
+      this.compressor = new Tone.Compressor({ threshold: -24, ratio: 2, attack: 0.005, release: 0.3, knee: 10 })
+      this.eq = new Tone.EQ3({ low: 2, mid: 0, high: -2 })
+      this.reverb = new Tone.Reverb({ decay: 2.2, preDelay: 0.01, wet: 0.28 })
+      await this.reverb.generate()
+      this.limiter = new Tone.Limiter(-3)
+      this.eq.connect(this.compressor)
+      this.compressor.connect(this.reverb)
+      this.reverb.connect(this.limiter)
+      this.limiter.toDestination()
+
       const samplerPromise = new Promise<void>((resolve, reject) => {
         let timeout: NodeJS.Timeout
-        
+
         this.sampler = new Tone.Sampler({
           urls: SALAMANDER_SAMPLES,
           baseUrl: SALAMANDER_BASE_URL,
+          attack: 0.004,
+          release: 0.6,
           onload: () => {
             clearTimeout(timeout)
             console.log("Salamander piano samples loaded successfully")
@@ -125,9 +143,12 @@ export class PianoAudioEngine {
             this.state = { status: "error", error: errorMsg }
             reject(new Error(errorMsg))
           },
-        }).toDestination()
+        })
 
-        // Timeout after 30 seconds (CDN loading can take a moment)
+        // Connect: sampler → eq → compressor → reverb → limiter
+        this.sampler.connect(this.eq!)
+
+        // Timeout after 30 seconds
         timeout = setTimeout(() => {
           const timeoutMsg = "Sampler load timeout after 30 seconds"
           console.error(timeoutMsg)
@@ -205,6 +226,10 @@ export class PianoAudioEngine {
     this.attackPart = new Tone.Part((time, eventNotes: Note[]) => {
       for (const note of eventNotes) {
         const vel = note.velocity ?? 0.8
+        // Release any existing voice first. Without this, a repeated note while
+        // the pedal holds the previous instance plays two voices simultaneously —
+        // the new attack transient is masked and the note sounds missing.
+        this.sampler!.triggerRelease(note.note, time)
         this.sampler!.triggerAttack(note.note, time, vel)
         if (this.debug) console.log(`[Pedal] triggerAttack: ${note.note} at ${time.toFixed(3)}s`)
       }
@@ -402,7 +427,10 @@ export class PianoAudioEngine {
     const pos = this.getTime()
     if (pos >= this.loopEndSec) {
       this.isLoopJumping = true
-      this.seek(this.loopStartSec, { resume: true })
+      // Seek 1.5s before the loop section so notes have time to fall in from
+      // the top of the visualizer before the first note hits the strike line.
+      const LEAD_IN_SEC = 1.5
+      this.seek(Math.max(0, this.loopStartSec - LEAD_IN_SEC), { resume: true })
       this.isLoopJumping = false
       return true
     }
@@ -427,34 +455,22 @@ export class PianoAudioEngine {
     return maxEnd
   }
 
-  /**
-   * Set UI tempo and reschedule notes to play at adjusted rates
-   * Rule: uiTempo 100 = 0.75x playback speed
-   * playbackRate = (uiTempo / 100) * 0.75
-   * 
-   * Lower playback rate means faster playback (notes are closer together in transport time).
-   */
   setTempo(uiTempo: number): void {
     this.uiTempo = uiTempo
-    const rate = (uiTempo / 100) * 0.75
-    
-    // If we're currently playing, we need to preserve position and tempo
+    const rate = uiTempo / 100
+
     const wasPlaying = Tone.Transport.state === "started"
     const currentTime = Tone.Transport.seconds
-    
-    // Update the playback rate
+    const oldRate = this.basePlaybackRate
+
     this.basePlaybackRate = rate
-    
-    // Reschedule notes with new timing
     this.scheduleNotes()
-    
-    // If we were playing, restore approximately the same position
+
     if (wasPlaying) {
-      // currentTime is in old-rate transport time, convert to piece time, then back to new-rate transport time
-      const pieceTime = currentTime * this.basePlaybackRate
+      const pieceTime = currentTime * oldRate
       Tone.Transport.seconds = pieceTime / rate
     }
-    
+
     console.log(`Tempo set to ${uiTempo}% => playback rate ${rate.toFixed(3)}x`)
   }
 
@@ -497,6 +513,22 @@ export class PianoAudioEngine {
     if (this.sampler) {
       this.sampler.dispose()
       this.sampler = null
+    }
+    if (this.compressor) {
+      this.compressor.dispose()
+      this.compressor = null
+    }
+    if (this.eq) {
+      this.eq.dispose()
+      this.eq = null
+    }
+    if (this.reverb) {
+      this.reverb.dispose()
+      this.reverb = null
+    }
+    if (this.limiter) {
+      this.limiter.dispose()
+      this.limiter = null
     }
     this.heldByPedal.clear()
     this.heldCounts.clear()

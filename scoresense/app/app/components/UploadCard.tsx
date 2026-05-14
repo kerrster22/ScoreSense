@@ -59,15 +59,15 @@ export function UploadCard({
         >
           <Upload className="h-8 w-8 mx-auto mb-3 text-muted-foreground" />
           <p className="text-sm text-muted-foreground mb-2">
-            Drag and drop your file here
+            Drag and drop your MIDI or MusicXML file here
           </p>
           <p className="text-xs text-muted-foreground mb-4">
-            PDF, JPG, or PNG
+            MIDI or MusicXML (.mid, .midi, .musicxml, .mxl)
           </p>
           <label>
             <input
               type="file"
-              accept=".pdf,.jpg,.jpeg,.png"
+              accept=".mid,.midi,.musicxml,.mxl,.xml"
               onChange={onFileSelect}
               className="hidden"
             />
@@ -102,7 +102,7 @@ export function UploadCard({
           disabled={!file || isConverting || isComplete}
           onClick={onStartConversion}
         >
-          Start conversion
+          Load piece
         </Button>
       </CardContent>
     </Card>

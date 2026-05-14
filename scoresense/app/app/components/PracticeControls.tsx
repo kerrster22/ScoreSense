@@ -7,11 +7,9 @@ import { Badge } from "@/components/ui/badge"
 import {
   Repeat,
   Hand,
-  Plus,
   Trash2,
   Save,
   Eye,
-  EyeOff,
   Volume2,
   VolumeX,
 } from "lucide-react"
@@ -33,6 +31,8 @@ interface PracticeControlsProps {
   onSaveLoop: (name: string) => void
   onDeleteLoop: (loopId: string) => void
   onSelectNamedLoop: (loop: NamedLoop) => void
+  onLoopCurrentBar?: () => void
+  currentBar?: number
   // Hand audio/visual modes
   handAudioMode: HandAudioMode
   handVisualMode: HandVisualMode
@@ -68,6 +68,8 @@ export function PracticeControls({
   onSaveLoop,
   onDeleteLoop,
   onSelectNamedLoop,
+  onLoopCurrentBar,
+  currentBar,
   handAudioMode,
   handVisualMode,
   onHandAudioModeChange,
@@ -76,6 +78,9 @@ export function PracticeControls({
   const [barStart, setBarStart] = useState("")
   const [barEnd, setBarEnd] = useState("")
   const [loopName, setLoopName] = useState("")
+  const [showAdvancedHand, setShowAdvancedHand] = useState(false)
+  const [thisBarFeedback, setThisBarFeedback] = useState<string | null>(null)
+  const thisBarTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const handleBarLoopSubmit = useCallback(() => {
     const s = parseInt(barStart, 10)
@@ -147,6 +152,22 @@ export function PracticeControls({
           >
             Set
           </Button>
+          {onLoopCurrentBar && (
+            <Button
+              variant="outline"
+              size="sm"
+              className={`h-7 text-xs transition-colors ${thisBarFeedback ? "border-accent text-accent" : ""}`}
+              disabled={!isComplete}
+              onClick={() => {
+                onLoopCurrentBar()
+                if (thisBarTimerRef.current) clearTimeout(thisBarTimerRef.current)
+                setThisBarFeedback(currentBar != null ? `Bar ${currentBar} ✓` : "✓")
+                thisBarTimerRef.current = setTimeout(() => setThisBarFeedback(null), 800)
+              }}
+            >
+              {thisBarFeedback ?? "This bar"}
+            </Button>
+          )}
         </div>
 
         {/* Save current loop */}
@@ -202,52 +223,95 @@ export function PracticeControls({
         )}
       </div>
 
-      {/* Hand Audio & Visual Controls */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {/* Audio hand mode */}
-        <div className="space-y-2">
-          <Label className="text-sm text-muted-foreground flex items-center gap-2">
-            <Volume2 className="h-4 w-4" />
-            Audio Hand
-          </Label>
-          <div className="flex flex-wrap gap-1">
-            {HAND_AUDIO_OPTIONS.map((opt) => (
-              <Button
-                key={opt.value}
-                variant={handAudioMode === opt.value ? "default" : "outline"}
-                size="sm"
+      {/* Hand Controls */}
+      <div className="space-y-2">
+        <Label className="text-sm text-muted-foreground flex items-center gap-2">
+          <Hand className="h-4 w-4" />
+          Hand Focus
+        </Label>
+
+        {/* Primary 3-way toggle: sets both audio and visual together */}
+        <div className="grid grid-cols-3 gap-1">
+          {(["left", "both", "right"] as const).map((mode) => {
+            const audioMatch = mode === "both" ? "both" : `${mode}-only` as HandAudioMode
+            const visualMatch = mode === "both" ? "both" : `${mode}-only` as HandVisualMode
+            const isActive = handVisualMode === visualMatch && handAudioMode === audioMatch
+            return (
+              <button
+                key={mode}
+                type="button"
                 disabled={!isComplete}
-                onClick={() => onHandAudioModeChange(opt.value)}
-                className="text-xs"
+                onClick={() => {
+                  onHandAudioModeChange(audioMatch)
+                  onHandVisualModeChange(visualMatch)
+                }}
+                className={`text-xs font-semibold py-1.5 rounded-md transition-colors border ${
+                  isActive
+                    ? mode === "right"
+                      ? "bg-pink-500/20 border-pink-500/50 text-pink-400"
+                      : mode === "left"
+                      ? "bg-purple-500/20 border-purple-500/50 text-purple-400"
+                      : "bg-accent/20 border-accent/50 text-accent"
+                    : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary/60"
+                } disabled:opacity-40`}
               >
-                {opt.icon}
-                <span className="ml-1">{opt.label}</span>
-              </Button>
-            ))}
-          </div>
+                {mode === "left" ? "L Hand" : mode === "right" ? "R Hand" : "Both"}
+              </button>
+            )
+          })}
         </div>
 
-        {/* Visual hand mode */}
-        <div className="space-y-2">
-          <Label className="text-sm text-muted-foreground flex items-center gap-2">
-            <Eye className="h-4 w-4" />
-            Visual Hand
-          </Label>
-          <div className="flex flex-wrap gap-1">
-            {HAND_VISUAL_OPTIONS.map((opt) => (
-              <Button
-                key={opt.value}
-                variant={handVisualMode === opt.value ? "default" : "outline"}
-                size="sm"
-                disabled={!isComplete}
-                onClick={() => onHandVisualModeChange(opt.value)}
-                className="text-xs"
-              >
-                {opt.label}
-              </Button>
-            ))}
+        {/* Advanced toggle */}
+        <button
+          type="button"
+          className="text-[11px] text-muted-foreground hover:text-foreground transition-colors underline-offset-2 hover:underline"
+          onClick={() => setShowAdvancedHand((v) => !v)}
+        >
+          {showAdvancedHand ? "▲ Hide advanced" : "▼ Advanced (independent audio/visual)"}
+        </button>
+
+        {showAdvancedHand && (
+          <div className="grid grid-cols-1 gap-3 pt-1 pl-2 border-l-2 border-border/40">
+            <div className="space-y-1.5">
+              <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Volume2 className="h-3 w-3" /> Audio
+              </span>
+              <div className="flex flex-wrap gap-1">
+                {HAND_AUDIO_OPTIONS.map((opt) => (
+                  <Button
+                    key={opt.value}
+                    variant={handAudioMode === opt.value ? "default" : "outline"}
+                    size="sm"
+                    disabled={!isComplete}
+                    onClick={() => onHandAudioModeChange(opt.value)}
+                    className="text-xs h-6 px-2"
+                  >
+                    {opt.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                <Eye className="h-3 w-3" /> Visual
+              </span>
+              <div className="flex flex-wrap gap-1">
+                {HAND_VISUAL_OPTIONS.map((opt) => (
+                  <Button
+                    key={opt.value}
+                    variant={handVisualMode === opt.value ? "default" : "outline"}
+                    size="sm"
+                    disabled={!isComplete}
+                    onClick={() => onHandVisualModeChange(opt.value)}
+                    className="text-xs h-6 px-2"
+                  >
+                    {opt.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   )

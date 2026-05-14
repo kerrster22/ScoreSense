@@ -1,12 +1,12 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { NoteEvent, PedalEvent, loadMidiFromUrl } from "./midi";
+import { NoteEvent, PedalEvent, TrackInfo, loadMidiFromUrl } from "./midi";
 
 type MidiLoadState =
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "ready"; events: NoteEvent[]; duration: number; bpm?: number; pedalEvents?: PedalEvent[] }
+  | { status: "ready"; events: NoteEvent[]; duration: number; bpm?: number; pedalEvents?: PedalEvent[]; tracks: TrackInfo[] }
   | { status: "error"; error: string }
 
 export function useMidi(url: string | null) {

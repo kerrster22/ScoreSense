@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   Upload,
@@ -24,17 +25,31 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 
+type FallingNote = { left: number; delay: number; duration: number }
+
 function FallingNotes() {
+  const [notes, setNotes] = useState<FallingNote[]>([])
+
+  useEffect(() => {
+    setNotes(
+      Array.from({ length: 20 }, () => ({
+        left: Math.random() * 100,
+        delay: Math.random() * 10,
+        duration: 10 + Math.random() * 10,
+      }))
+    )
+  }, [])
+
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      {[...Array(20)].map((_, i) => (
+      {notes.map((n, i) => (
         <div
           key={i}
           className="absolute h-8 w-1 rounded-full bg-accent/20 animate-fall"
           style={{
-            left: `${Math.random() * 100}%`,
-            animationDelay: `${Math.random() * 10}s`,
-            animationDuration: `${10 + Math.random() * 10}s`,
+            left: `${n.left}%`,
+            animationDelay: `${n.delay}s`,
+            animationDuration: `${n.duration}s`,
           }}
         />
       ))}
@@ -113,8 +128,8 @@ function Hero() {
           Turn sheet music into a learnable piano tutorial.
         </h1>
         <p className="mx-auto mt-6 max-w-2xl text-pretty text-lg text-muted-foreground sm:text-xl">
-          Upload a PDF or image. We convert it to MIDI and generate practice
-          loops, hand separation, and repeat-aware guidance.
+          Upload a MIDI or MusicXML file and get an interactive piano tutorial
+          with practice loops, hand separation, and repeat-aware guidance.
         </p>
         <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
           <Link href="/app">
@@ -144,18 +159,18 @@ function HowItWorks() {
       title: "Upload",
       description: "Drop your sheet music",
       bullets: [
-        "Supports PDF and image formats",
+        "Supports MIDI and MusicXML formats",
         "Drag & drop or browse files",
         "Secure local processing",
       ],
     },
     {
       icon: Music,
-      title: "Convert",
-      description: "AI-powered recognition",
+      title: "Parse",
+      description: "Instant score analysis",
       bullets: [
-        "Advanced OMR technology",
-        "Note-accurate MIDI output",
+        "Reads MIDI and MusicXML natively",
+        "Note-accurate with hand separation",
         "Preserves tempo & dynamics",
       ],
     },
@@ -226,8 +241,8 @@ function Features() {
   const features = [
     {
       icon: FileImage,
-      title: "Upload PDF/JPG",
-      description: "Import sheet music in any common format",
+      title: "Upload MIDI/MusicXML",
+      description: "Import your score in any standard format",
     },
     {
       icon: Music,
@@ -293,6 +308,13 @@ function Features() {
   );
 }
 
+// Fixed demo note columns: each entry is an array of marginTop values for that column
+const DEMO_NOTES: number[][] = [
+  [4], [12, 3], [8], [1, 14], [6], [10, 2], [3], [15, 7],
+  [9], [5, 11], [2], [13], [7, 1], [4], [16, 8], [3],
+  [6, 12], [2], [9, 5], [14], [3, 7], [11], [1, 8], [5, 13],
+]
+
 function DemoPreview() {
   return (
     <section className="relative border-t border-border/50 bg-card/30 py-24">
@@ -329,28 +351,24 @@ function DemoPreview() {
               <div className="absolute left-1/3 top-0 h-full w-0.5 bg-accent" />
               {/* Note visualization */}
               <div className="absolute inset-0 flex items-center px-4">
-                {[...Array(24)].map((_, i) => (
+                {DEMO_NOTES.map((col, i) => (
                   <div
                     key={i}
                     className="flex-1 flex flex-col gap-1 px-0.5"
                   >
-                    {[...Array(Math.floor(Math.random() * 3) + 1)].map(
-                      (_, j) => (
-                        <div
-                          key={j}
-                          className={`h-2 rounded-sm ${
-                            i < 8
-                              ? "bg-accent/60"
-                              : i < 16
-                                ? "bg-muted-foreground/30"
-                                : "bg-accent/30"
-                          }`}
-                          style={{
-                            marginTop: `${Math.random() * 20}px`,
-                          }}
-                        />
-                      )
-                    )}
+                    {col.map((mt, j) => (
+                      <div
+                        key={j}
+                        className={`h-2 rounded-sm ${
+                          i < 8
+                            ? "bg-accent/60"
+                            : i < 16
+                              ? "bg-muted-foreground/30"
+                              : "bg-accent/30"
+                        }`}
+                        style={{ marginTop: `${mt}px` }}
+                      />
+                    ))}
                   </div>
                 ))}
               </div>
@@ -431,14 +449,14 @@ function DemoPreview() {
 function FAQ() {
   const faqs = [
     {
-      question: "Does it work with photos?",
+      question: "What file formats are supported?",
       answer:
-        "Yes! ScoreSense supports both high-quality scans (PDF) and photos (JPG, PNG). For best results, ensure your photo is well-lit and the sheet music is flat. Our AI is trained to handle various image qualities.",
+        "ScoreSense supports MIDI (.mid, .midi) and MusicXML (.musicxml, .mxl, .xml) files. These are the standard formats exported by notation software like MuseScore, Finale, Sibelius, and most DAWs.",
     },
     {
       question: "Is this accurate?",
       answer:
-        "Our OMR (Optical Music Recognition) technology achieves over 95% accuracy on clean, printed sheet music. Handwritten scores and complex arrangements may have lower accuracy. You can always manually correct any misrecognized notes.",
+        "Playback is note-perfect — the notes come directly from the file with no recognition step. MusicXML files also preserve hand assignments, dynamics, and repeats. MIDI files get automatic hand separation based on pitch range.",
     },
     {
       question: "Can I export MIDI?",

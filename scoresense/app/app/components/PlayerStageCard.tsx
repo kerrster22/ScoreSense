@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
-import { Maximize2, Minimize2 } from "lucide-react"
+import { Maximize2, Minimize2, MoreHorizontal } from "lucide-react"
 import { VisualizerPanel } from "./VisualizerPanel"
 import { PianoKeyboard } from "./PianoKeyboard"
 import type { Note, PianoKey, LoopRange } from "./types"
@@ -13,12 +13,14 @@ interface PlayerStageCardProps {
   isComplete: boolean
   playbackTime: number
   handSelection: string
+  handVisualMode?: "both" | "right-only" | "left-only"
   showNoteNames: boolean
   showKeyLabels: boolean
   currentLoop: LoopRange | null
   tempo: number
   activeKeys: string[]
   currentLessonTitle?: string | null
+  loopEndTimeSec?: number
 }
 
 export function PlayerStageCard({
@@ -27,12 +29,14 @@ export function PlayerStageCard({
   isComplete,
   playbackTime,
   handSelection,
+  handVisualMode,
   showNoteNames,
   showKeyLabels,
   currentLoop,
   tempo,
   activeKeys,
   currentLessonTitle,
+  loopEndTimeSec,
 }: PlayerStageCardProps) {
   const [keyboardMode, setKeyboardMode] = useState<"fit" | "scroll">("fit")
   const [keyboardZoom, setKeyboardZoom] = useState<number>(1.2)
@@ -40,6 +44,7 @@ export function PlayerStageCard({
   const [keyboardViewportWidth, setKeyboardViewportWidth] = useState<number | undefined>(undefined)
 
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [showViewMenu, setShowViewMenu] = useState(false)
   const fullscreenRef = useRef<HTMLDivElement>(null)
 
   const handleKeyboardScrollChange = useCallback((scrollLeft: number, viewportWidth: number) => {
@@ -103,6 +108,7 @@ export function PlayerStageCard({
               keyboardZoom={keyboardZoom}
               keyboardScrollLeft={keyboardScrollLeft}
               keyboardViewportWidth={keyboardViewportWidth}
+              loopEndTimeSec={loopEndTimeSec}
             />
           </div>
 
@@ -129,6 +135,71 @@ export function PlayerStageCard({
       >
         {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
       </button>
+
+      {/* Active hand badge */}
+      {handVisualMode && handVisualMode !== "both" && (
+        <div className="absolute bottom-16 right-2 z-20">
+          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold backdrop-blur-sm border ${
+            handVisualMode === "right-only"
+              ? "bg-pink-500/20 border-pink-500/40 text-pink-300"
+              : "bg-purple-500/20 border-purple-500/40 text-purple-300"
+          }`}>
+            {handVisualMode === "right-only" ? "R" : "L"}
+          </span>
+        </div>
+      )}
+
+      {/* View settings ⋯ menu */}
+      <div className="absolute top-2 right-2 z-20">
+        <button
+          type="button"
+          onClick={() => setShowViewMenu((v) => !v)}
+          className="flex items-center justify-center rounded-lg bg-background/50 p-2 text-foreground/70 backdrop-blur-sm transition-colors hover:bg-background/70 hover:text-foreground"
+          aria-label="View settings"
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
+        {showViewMenu && (
+          <div className="absolute right-0 top-9 w-52 rounded-xl border border-border/60 bg-card/95 backdrop-blur-sm shadow-lg p-3 space-y-3">
+            <div className="space-y-1.5">
+              <span className="text-xs font-medium text-muted-foreground">Keyboard Mode</span>
+              <div className="flex gap-1">
+                {(["fit", "scroll"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setKeyboardMode(m)}
+                    className={`flex-1 text-xs font-semibold px-3 py-1.5 rounded-md transition-colors capitalize ${
+                      keyboardMode === m
+                        ? "bg-accent text-accent-foreground"
+                        : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">Zoom</span>
+                <span className="text-xs tabular-nums text-foreground">
+                  {(keyboardZoom * 100).toFixed(0)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.8}
+                max={2.0}
+                step={0.05}
+                value={keyboardZoom}
+                onChange={(e) => setKeyboardZoom(Number(e.target.value))}
+                className="w-full accent-accent"
+              />
+            </div>
+          </div>
+        )}
+      </div>
 
       {isFullscreen && (
         <div className="absolute bottom-2 left-1/2 z-20 -translate-x-1/2">

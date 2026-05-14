@@ -294,6 +294,7 @@ interface VisualizerPanelProps {
   keyboardScrollLeft?: number
   keyboardViewportWidth?: number
   showPerformanceOverlay?: boolean
+  loopEndTimeSec?: number
 }
 
 // =============================================================================
@@ -305,7 +306,7 @@ export function VisualizerPanel({
   currentLoop, tempo, isFullscreen = false,
   keyboardMode = "fit", keyboardZoom = 1,
   keyboardScrollLeft = 0, keyboardViewportWidth,
-  showPerformanceOverlay = false,
+  showPerformanceOverlay = false, loopEndTimeSec,
 }: VisualizerPanelProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -318,6 +319,7 @@ export function VisualizerPanel({
   const showNamesRef = useRef(showNoteNames); showNamesRef.current = showNoteNames
   const scrollRef = useRef(keyboardScrollLeft); scrollRef.current = keyboardScrollLeft
   const vpWRef = useRef(keyboardViewportWidth); vpWRef.current = keyboardViewportWidth
+  const loopEndRef = useRef<number | undefined>(loopEndTimeSec); loopEndRef.current = loopEndTimeSec
 
   // VFX pools
   const hitPool = useRef(makeHitPool(MAX_HIT_EFFECTS))
@@ -488,7 +490,9 @@ export function VisualizerPanel({
       // =====================================================================
       const widthScale = fs ? VFX.noteWidthScaleFullscreen : VFX.noteWidthScale
       const lookahead = fs ? LOOKAHEAD_SEC * VFX.fullscreen.leadTimeMult : LOOKAHEAD_SEC
-      const pps = BASE_PPS * (fs ? VFX.fullscreen.ppsMult : 1.0)
+      const basePps = BASE_PPS * (fs ? VFX.fullscreen.ppsMult : 1.0)
+      const tempoScale = clamp(100 / Math.max(curTempo, 1), 1.0, 2.0)
+      const pps = basePps * tempoScale
       const windowStart = curTime - LOOKBEHIND_SEC
       const windowEnd = curTime + lookahead
       const startIdx = findStartIndex(filteredNotes, windowStart)
@@ -502,7 +506,7 @@ export function VisualizerPanel({
         if (n.startTime > windowEnd + 1) break
 
         const pos = keyPositions[n.note]; if (!pos) continue
-        const noteH = Math.max(MIN_NOTE_PX, n.duration * pps)
+        const noteH = Math.max(MIN_NOTE_PX * tempoScale, n.duration * pps)
         const y = hitLineY - (n.startTime - curTime) * pps - noteH
         if (y > h || y + noteH < 0) continue
 
@@ -529,6 +533,7 @@ export function VisualizerPanel({
         // Sustain intensity: strong at start, gentle fade to 0.4 over duration
         const sustainI = isSustained ? 1 - easeOutCubic(sustainT) * 0.6 : 0
 
+        const velScale = n.velocity != null ? clamp(n.velocity, 0.3, 1.0) : 0.75
         const isHit = dist >= -HIT_EARLY && dist < HIT_LATE
 
         // Spawn bloom + particles (once per note-on)
@@ -559,7 +564,7 @@ export function VisualizerPanel({
         }
 
         // --- Outer glow (cached sprite) ---
-        const glowI = Math.max(hitProximity * 0.55, sustainI * 0.3)
+        const glowI = Math.max(hitProximity * 0.55, sustainI * 0.3) * velScale
         if (glowSprites && glowI > 0.01) {
           const sprite = isRight ? glowSprites.rh : glowSprites.lh
           const gs = 1.5 + hitProximity * 1.8 + sustainI * 0.8
@@ -573,9 +578,9 @@ export function VisualizerPanel({
 
         // --- NOTE BAR (rich gradient, wider, rounded) ---
         ctx.save()
-        // Held boost: brighter when sustained
+        // Held boost: brighter when sustained; velocity scales overall brightness
         const heldBoost = sustainI * 0.25
-        const baseAlpha = clamp(0.50 + hitProximity * 0.42 + sustainI * 0.22 + heldBoost, 0, 1)
+        const baseAlpha = clamp((0.50 + hitProximity * 0.42 + sustainI * 0.22 + heldBoost) * velScale, 0, 1)
 
         if (hitProximity > 0.04 || sustainI > 0.04) {
           const grad = ctx.createLinearGradient(xC, y, xC + ww, y + noteH)
@@ -615,7 +620,7 @@ export function VisualizerPanel({
 
         // Label
         if (curNames && ww > 18 && noteH > 22) {
-          const la = curTempo > 80 ? 0.45 : 0.80
+          const la = curTempo <= 50 ? 0.95 : curTempo <= 80 ? 0.80 : 0.45
           ctx.globalAlpha = la
           ctx.font = labelFont; ctx.textBaseline = "middle"; ctx.textAlign = "center"
           ctx.fillStyle = "rgba(0,0,0,0.4)"
@@ -685,6 +690,20 @@ export function VisualizerPanel({
         ctx.fillStyle = "#00ff00"
         ctx.fillText(statsText, 12, 25)
         ctx.restore()
+      }
+
+      // =====================================================================
+      // PASS 5: Loop fade-out (dark overlay fades in over last 0.8s of loop)
+      // =====================================================================
+      const loopEnd = loopEndRef.current
+      if (loopEnd !== undefined) {
+        const FADE_WINDOW = 0.8
+        const timeToEnd = loopEnd - curTime
+        if (timeToEnd >= 0 && timeToEnd < FADE_WINDOW) {
+          const fadeAlpha = (1 - timeToEnd / FADE_WINDOW) * 0.85
+          ctx.fillStyle = `rgba(8,8,13,${fadeAlpha.toFixed(3)})`
+          ctx.fillRect(0, 0, w, h)
+        }
       }
 
       // =====================================================================

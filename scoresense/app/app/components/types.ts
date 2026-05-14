@@ -1,6 +1,7 @@
 export interface UploadedFile {
   name: string
   size: number
+  fileObject: File
 }
 
 export interface Note {

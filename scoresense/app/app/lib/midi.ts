@@ -8,6 +8,14 @@ export type NoteEvent = {
   duration: number // seconds
   velocity: number // 0..1
   track: number
+  channel: number // MIDI channel 0-15
+}
+
+export type TrackInfo = {
+  index: number
+  name: string
+  channel: number
+  noteCount: number
 }
 
 export type PedalEvent = {
@@ -28,6 +36,7 @@ export async function loadMidiFromUrl(url: string): Promise<{
   duration: number
   bpm?: number
   pedalEvents?: PedalEvent[]
+  tracks: TrackInfo[]
 }> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`Failed to fetch MIDI: ${res.status}`)
@@ -37,7 +46,16 @@ export async function loadMidiFromUrl(url: string): Promise<{
 
   // Tonejs/midi stores times in seconds based on the MIDI tempo map.
   const events: NoteEvent[] = []
+  const tracks: TrackInfo[] = []
+
   midi.tracks.forEach((t, ti) => {
+    const trackChannel = (t as any).channel ?? 0
+    tracks.push({
+      index: ti,
+      name: t.name ?? "",
+      channel: trackChannel,
+      noteCount: t.notes.length,
+    })
     t.notes.forEach((n, ni) => {
       events.push({
         id: `${ti}-${ni}-${n.midi}-${n.time.toFixed(3)}`,
@@ -47,6 +65,7 @@ export async function loadMidiFromUrl(url: string): Promise<{
         duration: n.duration,
         velocity: n.velocity,
         track: ti,
+        channel: trackChannel,
       })
     })
   })
@@ -61,7 +80,8 @@ export async function loadMidiFromUrl(url: string): Promise<{
         pedalEventsRaw.push({
           time: cc.time,
           value: cc.value,
-          down: cc.value >= 64,
+          // @tonejs/midi normalises CC values to 0–1; MIDI threshold 64/127 ≈ 0.504
+          down: cc.value >= 0.5,
         })
       })
     }
@@ -82,5 +102,5 @@ export async function loadMidiFromUrl(url: string): Promise<{
   // Optional: first tempo event if present
   const bpm = midi.header.tempos?.[0]?.bpm
 
-  return { events, duration, bpm, pedalEvents: pedalEventsDeduplicated }
+  return { events, duration, bpm, pedalEvents: pedalEventsDeduplicated, tracks }
 }

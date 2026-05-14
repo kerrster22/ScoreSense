@@ -6,6 +6,7 @@ import { useMusicXml } from "./useMusicXml"
 import { alignMidiWithMusicXml } from "../lib/hybrid/align"
 import type { MidiNoteEvent, XmlNoteEvent, UnifiedNoteEvent } from "../lib/hybrid/types"
 import type { PedalEvent } from "../lib/midi"
+import { buildHandAssigner } from "../lib/handDetection"
 
 type HybridState =
   | { status: "idle" }
@@ -70,15 +71,18 @@ export function useHybridScore(opts: { midiUrl?: string | null; xmlUrl?: string 
 
     // MIDI only
     if (midiState.status === "ready" && (xmlState.status === "idle" || !opts.xmlUrl)) {
+      const handAssigner = buildHandAssigner(midiState.tracks ?? [], midiState.events)
+      const multiTrack = (midiState.tracks ?? []).filter(t => t.noteCount > 0).length >= 2
+      const confidence = multiTrack ? 0.80 : 0.50
       const events = midiState.events.map((e) => ({
         id: `m-${e.id}`,
         midi: e.midi,
         noteName: e.name,
         startTime: e.time,
         duration: e.duration,
-        hand: (e.midi <= 60 ? "left" : "right") as "left" | "right",
+        hand: handAssigner(e),
         velocity: e.velocity,
-        source: { midiId: e.id, xmlId: undefined, confidence: 0.25 },
+        source: { midiId: e.id, xmlId: undefined, confidence },
       }))
       setState({ status: "midi-only", events, duration: midiState.duration, stats: { midiCount: events.length }, pedalEvents: midiState.pedalEvents })
       return
