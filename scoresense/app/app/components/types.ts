@@ -52,6 +52,8 @@ export interface PatternInsight {
   loopEnd: number
   /** Other bar ranges where this pattern also appears */
   occurrences?: string[]
+  /** Similarity/confidence score 0–1 */
+  score?: number
 }
 
 export interface LoopRange {
@@ -131,6 +133,8 @@ export interface PiecePersistence {
   pieceHash: string
   namedLoops: NamedLoop[]
   lastPositionSec: number
+  completedSegmentIds?: string[]
+  totalSegmentCount?: number
   cachedAnalysis?: {
     algoVersion: string
     segments: Segment[]

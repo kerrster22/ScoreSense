@@ -98,6 +98,12 @@ export class PianoAudioEngine {
   private loopEndSec: number = 0
   private isLoopJumping: boolean = false
 
+  // Metronome
+  private metronomeLoop: Tone.Loop | null = null
+  private metronomeSynth: Tone.Synth | null = null
+  private metronomeEnabled: boolean = false
+  private metronomeBpm: number = 120
+
   // Debug
   private debug: boolean = false
 
@@ -206,30 +212,38 @@ export class PianoAudioEngine {
     }
 
     // ========= ATTACK SCHEDULING =========
-    // Group notes by startTime for chords
+    // Group notes by startTime for chords.
+    // Snap to a 2 ms grid so that floating-point imprecision in parsed note
+    // timings doesn't split a single chord into adjacent micro-events.
+    const CHORD_SNAP_SEC = 0.002
     const attackEvents: Array<[number, Note[]]> = []
     const attackTimeMap = new Map<number, Note[]>()
 
     for (const note of this.notes) {
-      const scheduledTime = note.startTime / this.basePlaybackRate
-      if (!attackTimeMap.has(scheduledTime)) {
-        attackTimeMap.set(scheduledTime, [])
+      const rawTime = note.startTime / this.basePlaybackRate
+      // Round to the nearest 2 ms bucket
+      const snappedTime = Math.round(rawTime / CHORD_SNAP_SEC) * CHORD_SNAP_SEC
+      if (!attackTimeMap.has(snappedTime)) {
+        attackTimeMap.set(snappedTime, [])
       }
-      attackTimeMap.get(scheduledTime)!.push(note)
+      attackTimeMap.get(snappedTime)!.push(note)
     }
 
     for (const [time, notes] of Array.from(attackTimeMap.entries()).sort((a, b) => a[0] - b[0])) {
       attackEvents.push([time, notes])
     }
 
-    // Create attack Part
+    // Create attack Part.
+    // We do NOT call triggerRelease before triggerAttack here: scheduling a
+    // release and an attack at the exact same AudioContext timestamp causes the
+    // sampler to treat them as conflicting envelope commands on the same voice,
+    // which silences chord notes — especially when two hands play the same
+    // pitch simultaneously.  Repeated-note re-triggering under pedal is handled
+    // by the release Part scheduling the old voice's release at the correct
+    // pedal-up time, which is always strictly before the next attack.
     this.attackPart = new Tone.Part((time, eventNotes: Note[]) => {
       for (const note of eventNotes) {
         const vel = note.velocity ?? 0.8
-        // Release any existing voice first. Without this, a repeated note while
-        // the pedal holds the previous instance plays two voices simultaneously —
-        // the new attack transient is masked and the note sounds missing.
-        this.sampler!.triggerRelease(note.note, time)
         this.sampler!.triggerAttack(note.note, time, vel)
         if (this.debug) console.log(`[Pedal] triggerAttack: ${note.note} at ${time.toFixed(3)}s`)
       }
@@ -269,7 +283,8 @@ export class PianoAudioEngine {
         }
       }
 
-      const scheduledReleaseTime = actualReleaseTime / this.basePlaybackRate
+      const rawReleaseTime = actualReleaseTime / this.basePlaybackRate
+      const scheduledReleaseTime = Math.round(rawReleaseTime / CHORD_SNAP_SEC) * CHORD_SNAP_SEC
       if (!releaseTimeMap.has(scheduledReleaseTime)) {
         releaseTimeMap.set(scheduledReleaseTime, [])
       }
@@ -292,7 +307,7 @@ export class PianoAudioEngine {
     // Schedule pedal changes to track state (for debugging)
     const pedalChangeEvents: Array<[number, PedalEvent]> = []
     for (const pe of this.pedalEvents) {
-      const scheduledTime = pe.time / this.basePlaybackRate
+      const scheduledTime = Math.round((pe.time / this.basePlaybackRate) / CHORD_SNAP_SEC) * CHORD_SNAP_SEC
       pedalChangeEvents.push([scheduledTime, pe])
     }
 
@@ -309,6 +324,7 @@ export class PianoAudioEngine {
     if (pedalChangeEvents.length > 0) {
       this.pedalPart.start(0)
     }
+    this._rebuildMetronomeLoop()
   }
 
   /**
@@ -357,6 +373,15 @@ export class PianoAudioEngine {
     this.heldCounts.clear()
     
     this.rescheduleNotes() // Re-schedule from the beginning
+  }
+
+  /**
+   * Start the transport from its current (already-seeked) position without
+   * calling Tone.start() again.  Safe to call from a rAF callback once the
+   * AudioContext has already been unlocked by a prior user gesture.
+   */
+  resumeFromSeek(): void {
+    Tone.Transport.start()
   }
 
   /**
@@ -530,8 +555,59 @@ export class PianoAudioEngine {
       this.limiter.dispose()
       this.limiter = null
     }
+    if (this.metronomeLoop) {
+      this.metronomeLoop.stop()
+      this.metronomeLoop.dispose()
+      this.metronomeLoop = null
+    }
+    if (this.metronomeSynth) {
+      this.metronomeSynth.dispose()
+      this.metronomeSynth = null
+    }
     this.heldByPedal.clear()
     this.heldCounts.clear()
+  }
+
+  // ---------------------------------------------------------------------------
+  // Metronome
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Enable or disable the metronome click track.
+   * @param enabled  Whether the metronome should play
+   * @param bpm      Piece BPM at full tempo (engine scales for current UI tempo)
+   */
+  setMetronome(enabled: boolean, bpm: number): void {
+    this.metronomeEnabled = enabled
+    this.metronomeBpm = Math.max(20, bpm)
+    this._rebuildMetronomeLoop()
+  }
+
+  private _rebuildMetronomeLoop(): void {
+    if (this.metronomeLoop) {
+      this.metronomeLoop.stop()
+      this.metronomeLoop.dispose()
+      this.metronomeLoop = null
+    }
+    if (!this.metronomeEnabled) return
+
+    if (!this.metronomeSynth) {
+      this.metronomeSynth = new Tone.Synth({
+        oscillator: { type: "square" },
+        envelope: { attack: 0.001, decay: 0.06, sustain: 0, release: 0.02 },
+      })
+      this.metronomeSynth.volume.value = -4
+      this.metronomeSynth.toDestination()
+    }
+
+    // Beat interval in transport-seconds.
+    // The engine uses basePlaybackRate to slow down notes at reduced tempo,
+    // so transport-time runs faster than piece-time. The metronome must match.
+    const transportSecPerBeat = 60 / (this.metronomeBpm * this.basePlaybackRate)
+    this.metronomeLoop = new Tone.Loop((time) => {
+      this.metronomeSynth!.triggerAttackRelease("C7", "64n", time)
+    }, transportSecPerBeat)
+    this.metronomeLoop.start(0)
   }
 
   /**

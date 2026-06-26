@@ -10,6 +10,8 @@ type PieceLibraryProps = {
   onSelectPiece: (piece: PieceFile) => void
   /** When true, renders as a collapsed single-row toggle until the user opens it */
   defaultCollapsed?: boolean
+  /** Per-piece progress keyed by filePath */
+  pieceProgress?: Record<string, { completed: number; total: number }>
 }
 
 export const PieceLibrary: React.FC<PieceLibraryProps> = ({
@@ -17,6 +19,7 @@ export const PieceLibrary: React.FC<PieceLibraryProps> = ({
   selectedPiece,
   onSelectPiece,
   defaultCollapsed = false,
+  pieceProgress = {},
 }) => {
   const [isOpen, setIsOpen] = useState(!defaultCollapsed)
   const [expandedComposer, setExpandedComposer] = useState<Record<string, boolean>>({})
@@ -75,7 +78,11 @@ export const PieceLibrary: React.FC<PieceLibraryProps> = ({
                     </button>
                     {expanded && (
                       <ul className="mt-1 ml-4 border-l border-border/40 pl-2 space-y-0.5">
-                        {group.pieces.map((piece) => (
+                        {group.pieces.map((piece) => {
+                          const prog = pieceProgress[piece.filePath]
+                          const isDone = prog && prog.completed >= prog.total && prog.total > 0
+                          const pct = prog && prog.total > 0 ? Math.round((prog.completed / prog.total) * 100) : 0
+                          return (
                           <li key={piece.filePath}>
                             <button
                               type="button"
@@ -88,19 +95,27 @@ export const PieceLibrary: React.FC<PieceLibraryProps> = ({
                             >
                               <div className="flex justify-between items-center gap-2">
                                 <span className="truncate">{piece.title}</span>
-                                <span className="text-[10px] text-muted-foreground/70 shrink-0">
-                                  {piece.midiPath && piece.xmlPath
-                                    ? "MIDI+XML"
-                                    : piece.midiPath
-                                    ? "MIDI"
-                                    : piece.xmlPath
-                                    ? "XML"
-                                    : piece.extension.toUpperCase().replace(".", "")}
-                                </span>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {isDone ? (
+                                    <span className="text-[10px] text-green-400 font-semibold">✓</span>
+                                  ) : prog ? (
+                                    <span className="text-[10px] text-muted-foreground/70">{pct}%</span>
+                                  ) : null}
+                                  <span className="text-[10px] text-muted-foreground/70">
+                                    {piece.midiPath && piece.xmlPath
+                                      ? "MIDI+XML"
+                                      : piece.midiPath
+                                      ? "MIDI"
+                                      : piece.xmlPath
+                                      ? "XML"
+                                      : piece.extension.toUpperCase().replace(".", "")}
+                                  </span>
+                                </div>
                               </div>
                             </button>
                           </li>
-                        ))}
+                          )
+                        })}
                       </ul>
                     )}
                   </li>

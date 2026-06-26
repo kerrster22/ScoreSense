@@ -9,11 +9,11 @@ export function AppTopNav() {
             <Music className="h-6 w-6 text-accent" />
             <span className="font-semibold text-lg text-foreground">ScoreSense</span>
           </a>
-          <div className="flex items-center gap-6">
+          <div className="hidden sm:flex items-center gap-6">
             <a href="#" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Docs
             </a>
-            <a href="#" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+            <a href="https://github.com/kerrster22/ScoreSense/issues" target="_blank" rel="noreferrer" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Feedback
             </a>
           </div>

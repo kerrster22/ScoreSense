@@ -85,6 +85,10 @@ export const useTutorialMode = (
     }))
   }, [])
 
+  const setCompletedIds = useCallback((ids: string[]) => {
+    setState((prev) => ({ ...prev, completedSegmentIds: ids }))
+  }, [])
+
   const hasNext = useMemo(() => segments.length > state.currentSegmentIndex + 1, [segments.length, state.currentSegmentIndex])
   const hasPrev = useMemo(() => state.currentSegmentIndex > 0, [state.currentSegmentIndex])
 
@@ -95,6 +99,7 @@ export const useTutorialMode = (
     nextSegment,
     prevSegment,
     markComplete,
+    setCompletedIds,
     setPlaybackMode,
     toggleAutoAdvance,
     toggleReplaySegment,

@@ -99,6 +99,50 @@ export function saveLastPosition(pieceHash: string, sec: number): void {
 }
 
 // ---------------------------------------------------------------------------
+// Tutorial completion
+// ---------------------------------------------------------------------------
+
+export function saveCompletedSegments(pieceHash: string, ids: string[], totalCount?: number): void {
+  const data = loadPieceData(pieceHash)
+  data.completedSegmentIds = ids
+  if (totalCount !== undefined) data.totalSegmentCount = totalCount
+  savePieceData(data)
+}
+
+export function loadCompletedSegments(pieceHash: string): string[] {
+  return loadPieceData(pieceHash).completedSegmentIds ?? []
+}
+
+// Lookup table: filePath → pieceHash (so PieceLibrary can read progress without loading notes)
+const PATH_HASH_KEY = "ss_path_to_hash"
+
+export function recordPiecePathHash(filePath: string, pieceHash: string): void {
+  if (typeof window === "undefined") return
+  try {
+    const raw = localStorage.getItem(PATH_HASH_KEY)
+    const map: Record<string, string> = raw ? JSON.parse(raw) : {}
+    map[filePath] = pieceHash
+    localStorage.setItem(PATH_HASH_KEY, JSON.stringify(map))
+  } catch {}
+}
+
+export function getPieceProgressByPath(filePath: string): { completed: number; total: number } | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = localStorage.getItem(PATH_HASH_KEY)
+    if (!raw) return null
+    const map: Record<string, string> = JSON.parse(raw)
+    const hash = map[filePath]
+    if (!hash) return null
+    const data = loadPieceData(hash)
+    if (!data.totalSegmentCount) return null
+    return { completed: (data.completedSegmentIds ?? []).length, total: data.totalSegmentCount }
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Cached analysis
 // ---------------------------------------------------------------------------
 

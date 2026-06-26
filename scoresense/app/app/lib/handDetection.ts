@@ -64,6 +64,30 @@ function buildVoiceSeparator(events: NoteEvent[]): HandAssigner {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: assign hands to any number of tracks by median pitch.
+// Tracks are sorted by their median MIDI pitch; the lower-pitched half →
+// "left", the higher-pitched half → "right".  Works for 2, 3, 4 … N staves.
+// ---------------------------------------------------------------------------
+function buildMedianPitchAssigner(trackIndices: number[], events: NoteEvent[]): HandAssigner {
+  const ranked = trackIndices.map(idx => {
+    const pitches = events
+      .filter(e => e.track === idx)
+      .map(e => e.midi)
+      .sort((a, b) => a - b)
+    const mid = Math.floor(pitches.length / 2)
+    return { idx, median: pitches[mid] ?? 60 }
+  })
+  ranked.sort((a, b) => a.median - b.median)
+
+  // Lower half → left, upper half → right.
+  // For odd counts the middle track goes right (treble bias is safer for piano).
+  const halfIdx = Math.floor(ranked.length / 2)
+  const leftSet = new Set(ranked.slice(0, halfIdx).map(r => r.idx))
+
+  return (e: NoteEvent) => (leftSet.has(e.track) ? "left" : "right")
+}
+
+// ---------------------------------------------------------------------------
 // Main export
 // ---------------------------------------------------------------------------
 export function buildHandAssigner(tracks: TrackInfo[], events: NoteEvent[]): HandAssigner {
@@ -73,37 +97,53 @@ export function buildHandAssigner(tracks: TrackInfo[], events: NoteEvent[]): Han
   if (tracksWithNotes.length >= 2) {
     const assignment = new Map<number, "left" | "right">()
 
-    // Case 1: keyword detection
+    // Case 1: keyword detection — assign whatever tracks we can name
     for (const t of tracksWithNotes) {
       if (RIGHT_KEYWORDS.test(t.name)) assignment.set(t.index, "right")
       else if (LEFT_KEYWORDS.test(t.name)) assignment.set(t.index, "left")
     }
 
+    // If at least 2 tracks were keyword-matched, fill remaining by median pitch
     if (assignment.size >= 2) {
-      return (e: NoteEvent) => assignment.get(e.track) ?? (e.midi > 60 ? "right" : "left")
+      const unmatched = tracksWithNotes
+        .filter(t => !assignment.has(t.index))
+        .map(t => t.index)
+      const fallback = unmatched.length > 0
+        ? buildMedianPitchAssigner(
+            [...tracksWithNotes.map(t => t.index)],
+            events
+          )
+        : null
+      return (e: NoteEvent) =>
+        assignment.get(e.track) ??
+        (fallback ? fallback(e) : (e.midi > 60 ? "right" : "left"))
     }
 
-    // Case 2: track order — first = right, second = left
-    const sorted = [...tracksWithNotes].sort((a, b) => a.index - b.index)
-    const rightTrack = sorted[0].index
-    const leftTrack = sorted[1].index
-    return (e: NoteEvent) => {
-      if (e.track === rightTrack) return "right"
-      if (e.track === leftTrack) return "left"
-      return e.midi > 60 ? "right" : "left"
-    }
+    // Case 2: no keyword matches — use median pitch for all tracks.
+    // This correctly handles 2-staff, 3-staff, and 4-staff (SATB) MIDI files.
+    return buildMedianPitchAssigner(
+      tracksWithNotes.map(t => t.index),
+      events
+    )
   }
 
   // ── Case 3: Single track, multiple channels ──────────────────────────────
   const uniqueChannels = [...new Set(events.map(e => e.channel))].sort((a, b) => a - b)
   if (uniqueChannels.length >= 2) {
-    const rightCh = uniqueChannels[0]
-    const leftCh = uniqueChannels[1]
-    return (e: NoteEvent) => {
-      if (e.channel === rightCh) return "right"
-      if (e.channel === leftCh) return "left"
-      return e.midi > 60 ? "right" : "left"
-    }
+    // Treat each channel as a virtual "track" and apply the same median-pitch
+    // strategy so 3-channel (3-staff) Type-0 MIDI files work too.
+    const channelRanked = uniqueChannels.map(ch => {
+      const pitches = events
+        .filter(e => e.channel === ch)
+        .map(e => e.midi)
+        .sort((a, b) => a - b)
+      const mid = Math.floor(pitches.length / 2)
+      return { ch, median: pitches[mid] ?? 60 }
+    })
+    channelRanked.sort((a, b) => a.median - b.median)
+    const halfIdx = Math.floor(channelRanked.length / 2)
+    const leftChannels = new Set(channelRanked.slice(0, halfIdx).map(r => r.ch))
+    return (e: NoteEvent) => (leftChannels.has(e.channel) ? "left" : "right")
   }
 
   // ── Case 4: Voice separation ─────────────────────────────────────────────

@@ -49,7 +49,12 @@ export async function loadMidiFromUrl(url: string): Promise<{
   const tracks: TrackInfo[] = []
 
   midi.tracks.forEach((t, ti) => {
-    const trackChannel = (t as any).channel ?? 0
+    // @tonejs/midi exposes .channel on the Track at runtime but not always in
+    // the TypeScript declaration.  Fall back to the first note's channel if
+    // the track-level property isn't available, then default to the track index
+    // so different staves end up with different channel values even in edge cases.
+    const firstNoteChannel = (t.notes[0] as any)?.channel as number | undefined
+    const trackChannel = ((t as any).channel ?? firstNoteChannel ?? ti) as number
     tracks.push({
       index: ti,
       name: t.name ?? "",
@@ -57,6 +62,7 @@ export async function loadMidiFromUrl(url: string): Promise<{
       noteCount: t.notes.length,
     })
     t.notes.forEach((n, ni) => {
+      const noteChannel = ((n as any).channel as number | undefined) ?? trackChannel
       events.push({
         id: `${ti}-${ni}-${n.midi}-${n.time.toFixed(3)}`,
         midi: n.midi,
@@ -65,7 +71,7 @@ export async function loadMidiFromUrl(url: string): Promise<{
         duration: n.duration,
         velocity: n.velocity,
         track: ti,
-        channel: trackChannel,
+        channel: noteChannel,
       })
     })
   })

@@ -167,7 +167,7 @@ export const TutorialPanel: React.FC<TutorialPanelProps> = ({
     <div className="flex flex-col bg-card/50 border border-border/50 rounded-xl overflow-hidden">
       {/* Playlist header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border/40">
-        <div>
+        <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-foreground">Practice Playlist</div>
           <div className="flex items-center gap-2 mt-0.5">
             <span className="text-xs text-muted-foreground">{segments.length} segments</span>
@@ -177,6 +177,20 @@ export const TutorialPanel: React.FC<TutorialPanelProps> = ({
               </span>
             )}
           </div>
+          {/* Completion progress bar */}
+          {segments.length > 0 && (
+            <div className="mt-2 flex items-center gap-2">
+              <div className="flex-1 h-1.5 rounded-full bg-secondary/80 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-green-500 transition-all duration-500"
+                  style={{ width: `${Math.round((tutorialState.completedSegmentIds.length / segments.length) * 100)}%` }}
+                />
+              </div>
+              <span className="text-[10px] tabular-nums text-muted-foreground shrink-0">
+                {tutorialState.completedSegmentIds.length}/{segments.length}
+              </span>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button

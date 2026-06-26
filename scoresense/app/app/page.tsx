@@ -11,7 +11,6 @@ import { PlayerStageCard } from "./components/PlayerStageCard"
 import { PieceTimeline } from "./components/PieceTimeline"
 import { SidebarControls } from "./components/SidebarControls"
 import { TutorialPlayerCard } from "./components/TutorialPlayerCard"
-import { LessonsTab } from "./components/LessonsTab"
 import { InsightsTab } from "./components/InsightsTab"
 
 // UI
@@ -30,13 +29,31 @@ import { generateTutorialSegments } from "@/lib/tutorialSegments"
 import { useTutorialMode } from "@/hooks/useTutorialMode"
 import type { TutorialSegment } from "@/types/tutorial"
 
+// Engagement / gamification
+import { ProgressHUD } from "./components/ProgressHUD"
+import { AchievementToast } from "./components/AchievementToast"
+import {
+  loadProgress,
+  recordPracticeSession,
+  awardXp,
+  checkAndUnlockAchievements,
+  unlockFirstNoteAchievement,
+  type UserProgress,
+  type Achievement,
+} from "./lib/userProgress"
+import {
+  saveCompletedSegments,
+  loadCompletedSegments,
+  recordPiecePathHash,
+  getPieceProgressByPath,
+} from "./lib/persistence"
+
 // Icons
 import {
   Music,
   Play,
   Pause,
   RotateCcw,
-  BookOpen,
   Lightbulb,
   Upload,
   Timer,
@@ -58,7 +75,6 @@ import type {
   LoopRange,
   NamedLoop,
   Segment,
-  Lesson,
   HandAudioMode,
   HandVisualMode,
 } from "./components/types"
@@ -69,7 +85,7 @@ import { generateFullPianoKeys } from "./lib/piano"
 import { useMusicXml } from "./hooks/useMusicXml"
 import { useHybridScore } from "./hooks/useHybridScore"
 import { getPianoAudioEngine } from "./lib/pianoAudioEngine"
-import { analyzePiece, ALGO_VERSION } from "./lib/practiceAnalysis"
+import { analyzePiece, analyzeFromNotes, ALGO_VERSION } from "./lib/practiceAnalysis"
 import {
   computePieceHash,
   loadPieceData,
@@ -80,6 +96,13 @@ import {
   cacheAnalysis,
 } from "./lib/persistence"
 import { filterNotesByVisualHand, filterNotesByAudioHand, computeActiveKeys } from "./lib/handFilter"
+
+// ============================================================================
+// Practice section timing constants — tweak here to adjust the feel
+// ============================================================================
+
+const PRACTICE_PREROLL_SEC  = 2.0  // how many seconds of "run-up" before the first note
+const PRACTICE_POSTROLL_SEC = 2.0  // how many seconds to linger after the last note
 
 // ============================================================================
 // Constants / Mock Data
@@ -126,32 +149,6 @@ const HAND_OPTIONS: HandOption[] = [
   { value: "left", label: "Left" },
 ]
 
-const FALLBACK_PATTERN_INSIGHTS: PatternInsight[] = [
-  {
-    id: 1,
-    text: "This section repeats exactly - master it once, play it twice",
-    barRange: "Bars 9-16",
-    type: "exact",
-    loopStart: 9,
-    loopEnd: 16,
-  },
-  {
-    id: 2,
-    text: "Left-hand pattern stays consistent here - great for building muscle memory",
-    barRange: "Bars 1-8",
-    type: "left-hand",
-    loopStart: 1,
-    loopEnd: 8,
-  },
-  {
-    id: 3,
-    text: "The main theme returns transposed higher - same fingering, new position",
-    barRange: "Bars 33-40",
-    type: "transposed",
-    loopStart: 33,
-    loopEnd: 40,
-  },
-]
 
 // ============================================================================
 // Helper: format seconds -> m:ss
@@ -202,13 +199,7 @@ export default function AppPage() {
 
   // ---------- Analysis & lessons ----------
   const [segments, setSegments] = useState<Segment[]>([])
-  const [lessons, setLessons] = useState<Lesson[]>([])
   const [patternInsights, setPatternInsights] = useState<PatternInsight[]>([])
-  const [, setCurrentSegmentId] = useState<string | null>(null)
-  const [autoPlayOnSelect] = useState(true)
-
-  // ---------- Current lesson (for "Now Learning" banner) ----------
-  const [currentLessonTitle, setCurrentLessonTitle] = useState<string | null>(null)
 
   // ---------- Named loops & persistence ----------
   const [namedLoops, setNamedLoops] = useState<NamedLoop[]>([])
@@ -220,6 +211,22 @@ export default function AppPage() {
 
   // ---------- Audio engine ----------
   const audioEngineRef = useRef(getPianoAudioEngine())
+
+  // Tracks whether markComplete has already fired for the current segment playthrough.
+  // Reset whenever a new segment starts or the section loops back.
+  const postRollFiredRef = useRef(false)
+
+  // Practice lead-in: virtual visual clock that counts up to seg.startTime before audio fires.
+  // All four refs are set together whenever a lead-in begins.
+  const isPracticeLeadInRef = useRef(false)
+  const leadInWallStartMsRef = useRef(0)      // performance.now() when lead-in began
+  const leadInVisualStartSecRef = useRef(0)   // visual playbackTime at lead-in start (may be < 0)
+  const leadInTargetSecRef = useRef(0)        // seg.startTime — when audio fires
+
+  // Practice post-roll: audio is already paused; visual clock keeps ticking via wall clock.
+  const isPracticePostRollRef = useRef(false)
+  const postRollWallStartMsRef = useRef(0)    // performance.now() when post-roll began
+  const postRollVisualStartSecRef = useRef(0) // engine time at moment audio was cut
 
   // ---------- Tab state ----------
   const [activeTab, setActiveTab] = useState("player")
@@ -245,17 +252,83 @@ export default function AppPage() {
     return () => clearInterval(interval)
   }, [])
 
+  // ---------- Engagement / gamification ----------
+  const [progress, setProgress] = useState<UserProgress>(() => {
+    if (typeof window === "undefined") return { totalXp: 0, streak: 0, lastPracticeDate: "", unlockedAchievements: [] }
+    return loadProgress()
+  })
+  const [achievementQueue, setAchievementQueue] = useState<Achievement[]>([])
+  const hasRecordedSessionRef = useRef(false)
+
+  const pushAchievements = useCallback((achievements: Achievement[]) => {
+    if (achievements.length > 0) setAchievementQueue((prev) => [...prev, ...achievements])
+  }, [])
+
+  const dismissAchievement = useCallback(() => {
+    setAchievementQueue((prev) => prev.slice(1))
+  }, [])
+
   // ---------- Piece library ----------
-  const [pieceLibrary, setPieceLibrary] = useState<ComposerGroup[]>([]) 
+  const [pieceLibrary, setPieceLibrary] = useState<ComposerGroup[]>([])
   const [selectedPiece, setSelectedPiece] = useState<PieceFile | null>(null)
+  const [pieceProgress, setPieceProgress] = useState<Record<string, { completed: number; total: number }>>(() => {
+    if (typeof window === "undefined") return {}
+    // Pre-populate from known saved paths on first render
+    const out: Record<string, { completed: number; total: number }> = {}
+    try {
+      const raw = localStorage.getItem("ss_path_to_hash")
+      if (raw) {
+        const map: Record<string, string> = JSON.parse(raw)
+        for (const fp of Object.keys(map)) {
+          const p = getPieceProgressByPath(fp)
+          if (p) out[fp] = p
+        }
+      }
+    } catch {}
+    return out
+  })
 
   // ---------- Tutorial mode ----------
   const measureMap = musicXmlState.status === "ready" ? musicXmlState.measureMap : []
 
-  const tutorialSegments: TutorialSegment[] = useMemo(
-    () => generateTutorialSegments(segments, measureMap, musicXmlState.status === "ready" ? musicXmlState.events as any : null),
-    [segments, measureMap, musicXmlState]
-  )
+  const tutorialSegments: TutorialSegment[] = useMemo(() => {
+    const xmlBased = generateTutorialSegments(
+      segments,
+      measureMap,
+      musicXmlState.status === "ready" ? (musicXmlState.events as any) : null
+    )
+    if (xmlBased.length > 0) return xmlBased
+
+    // MIDI-only fallback: slice the piece into time-based chunks.
+    // Use BPM to size each chunk at 4 bars; default to 8 s if BPM unknown.
+    const duration = midiState.status === "ready" ? midiState.duration : 0
+    if (duration <= 0) return []
+
+    const rawBpm = midiState.status === "ready" ? (midiState.bpm ?? 120) : 120
+    const secPerBeat = 60 / rawBpm
+    const chunkSec = Math.max(4, secPerBeat * 4 * 4) // 4 bars × 4 beats
+
+    const segs: TutorialSegment[] = []
+    let barCounter = 1
+    for (let start = 0; start < duration; start += chunkSec) {
+      const end = Math.min(start + chunkSec, duration)
+      const barsInChunk = Math.round((end - start) / (secPerBeat * 4))
+      const endBar = barCounter + barsInChunk - 1
+      segs.push({
+        id: `midi-seg-${segs.length}`,
+        title: `Bars ${barCounter}–${endBar}`,
+        startTime: start,
+        endTime: end,
+        startMeasure: barCounter,
+        endMeasure: endBar,
+        handFocus: "both",
+        isRepeat: false,
+        difficulty: 2,
+      })
+      barCounter = endBar + 1
+    }
+    return segs
+  }, [segments, measureMap, musicXmlState, midiState])
   const tutorialMode = useTutorialMode(tutorialSegments, { autoAdvance: false, replaySegment: false })
   const [tutorialPlayerActive, setTutorialPlayerActive] = useState(false)
 
@@ -296,9 +369,26 @@ export default function AppPage() {
   // =========================================================================
   // Consistent hand filtering using shared helper
   // =========================================================================
+
+  // When a practice segment is active, clamp notes to that segment's range so
+  // the visualizer never shows notes from adjacent sections during the lead-in
+  // or post-roll. Full-piece notes are still used for the timeline and audio.
+  const notesForVisualizer = useMemo(() => {
+    if (tutorialPlayerActive && activeTutorialSegment) {
+      const { startTime, endTime } = activeTutorialSegment
+      return notesForPlayer.filter(n => n.startTime >= startTime && n.startTime < endTime)
+    }
+    return notesForPlayer
+  }, [notesForPlayer, tutorialPlayerActive, activeTutorialSegment])
+
   const visuallyFilteredNotes = useMemo(
     () => filterNotesByVisualHand(notesForPlayer, handVisualMode),
     [notesForPlayer, handVisualMode]
+  )
+
+  const visuallyFilteredPracticeNotes = useMemo(
+    () => filterNotesByVisualHand(notesForVisualizer, handVisualMode),
+    [notesForVisualizer, handVisualMode]
   )
 
   // The handSelection prop for the visualizer: derive from handVisualMode
@@ -310,10 +400,11 @@ export default function AppPage() {
     }
   }, [handVisualMode])
 
-  // Active keys: computed from visually filtered notes only
+  // Active keys: use segment-clamped notes during practice so keys don't light
+  // from out-of-section notes during lead-in / post-roll
   const activeKeys = useMemo(
-    () => computeActiveKeys(visuallyFilteredNotes, playbackTime),
-    [visuallyFilteredNotes, playbackTime]
+    () => computeActiveKeys(visuallyFilteredPracticeNotes, playbackTime),
+    [visuallyFilteredPracticeNotes, playbackTime]
   )
 
   // =========================================================================
@@ -443,6 +534,13 @@ export default function AppPage() {
     const engine = audioEngineRef.current
     if (engine.getState().status !== "ready") return
     try {
+      // Cancel lead-in on pause — treat as a clean stop of the practice preview
+      if (isPracticeLeadInRef.current) {
+        isPracticeLeadInRef.current = false
+        engine.pause()
+        setIsPlaying(false)
+        return
+      }
       if (isPlaying) {
         engine.pause()
         setIsPlaying(false)
@@ -468,7 +566,11 @@ export default function AppPage() {
     }
   }, [])
 
-  const handleMetronomeToggle = useCallback(() => setMetronomeOn((p) => !p), [])
+  const handleMetronomeToggle = useCallback(() => {
+    const next = !metronomeOn
+    setMetronomeOn(next)
+    audioEngineRef.current.setMetronome(next, bpm ?? 120)
+  }, [metronomeOn, bpm])
 
   const handleTempoChange = useCallback((value: number) => {
     setTempo(value)
@@ -578,6 +680,43 @@ export default function AppPage() {
     }
   }, [activeTutorialSegment])
 
+  // Stable refs so handleMarkComplete doesn't need tutorialMode in its deps
+  // (tutorialMode is a plain object that gets a new reference every render;
+  //  putting it in deps would restart the animation loop on every render).
+  const completedSegmentIdsRef = useRef<string[]>(tutorialMode.state.completedSegmentIds)
+  const markCompleteRef        = useRef(tutorialMode.markComplete)
+  useEffect(() => {
+    completedSegmentIdsRef.current = tutorialMode.state.completedSegmentIds
+    markCompleteRef.current        = tutorialMode.markComplete
+  })
+
+  // Wrap markComplete with persistence + XP + achievement logic
+  const handleMarkComplete = useCallback((segmentId: string) => {
+    if (completedSegmentIdsRef.current.includes(segmentId)) return
+    markCompleteRef.current(segmentId)
+
+    const newIds = [...completedSegmentIdsRef.current, segmentId]
+
+    if (pieceHash) {
+      saveCompletedSegments(pieceHash, newIds, tutorialSegments.length)
+      const fp = selectedPiece?.filePath ?? (file?.name ?? null)
+      if (fp) {
+        recordPiecePathHash(fp, pieceHash)
+        setPieceProgress((prev) => ({ ...prev, [fp]: { completed: newIds.length, total: tutorialSegments.length } }))
+      }
+    }
+
+    const xpResult = awardXp(15)
+    const { unlocked, progress: afterAchievements } = checkAndUnlockAchievements({
+      totalCompleted: newIds.length,
+      streak: xpResult.progress.streak,
+      tempo,
+      allSegmentsComplete: tutorialSegments.length > 0 && newIds.length >= tutorialSegments.length,
+    })
+    setProgress(afterAchievements)
+    pushAchievements(unlocked)
+  }, [pieceHash, tutorialSegments.length, selectedPiece, file, tempo, pushAchievements])
+
   // Playback animation and tutorial segment control
   useEffect(() => {
     if (!isPlaying || !isComplete) {
@@ -588,55 +727,97 @@ export default function AppPage() {
       return
     }
 
+    // Helper: begin a visual lead-in for a segment, leaving audio parked silently
+    const startLeadIn = (seg: TutorialSegment) => {
+      audioEngineRef.current.seek(seg.startTime, { resume: false })
+      isPracticeLeadInRef.current = true
+      leadInWallStartMsRef.current = performance.now()
+      leadInVisualStartSecRef.current = seg.startTime - PRACTICE_PREROLL_SEC
+      leadInTargetSecRef.current = seg.startTime
+      setPlaybackTime(seg.startTime - PRACTICE_PREROLL_SEC)
+    }
+
     const animate = () => {
       try {
         const engine = audioEngineRef.current
         engine.tickLoop()
-        const currentTime = engine.getTime()
 
+        // ── PRACTICE LEAD-IN PHASE ──────────────────────────────────────────
+        // Virtual visual clock ticks ahead of silent, parked audio.
+        // When it reaches seg.startTime the transport fires and audio begins.
+        if (isPracticeLeadInRef.current) {
+          const elapsed = (performance.now() - leadInWallStartMsRef.current) / 1000
+          const visualTime = leadInVisualStartSecRef.current + elapsed
+          setPlaybackTime(visualTime)
+
+          if (visualTime >= leadInTargetSecRef.current) {
+            isPracticeLeadInRef.current = false
+            // Transport is parked at seg.startTime — fire it
+            engine.resumeFromSeek()
+          }
+          animationRef.current = requestAnimationFrame(animate)
+          return
+        }
+
+        // ── POST-ROLL PHASE (audio silent, visual clock ticks via wall clock) ──
+        if (isPracticePostRollRef.current) {
+          const elapsed = (performance.now() - postRollWallStartMsRef.current) / 1000
+          const visualTime = postRollVisualStartSecRef.current + elapsed
+          setPlaybackTime(visualTime)
+
+          if (elapsed >= PRACTICE_POSTROLL_SEC) {
+            isPracticePostRollRef.current = false
+            postRollFiredRef.current = false
+            const activeSeg = tutorialPlayerActive ? activeTutorialSegment : null
+            if (activeSeg && tutorialMode.state.replaySegment) {
+              startLeadIn(activeSeg)
+              tutorialMode.setPlaybackMode("replay")
+              animationRef.current = requestAnimationFrame(animate)
+              return
+            } else if (activeSeg && tutorialState.autoAdvance && tutorialHasNext) {
+              const nextIdx = tutorialState.currentSegmentIndex + 1
+              const nextSeg = tutorialSegments[nextIdx]
+              if (nextSeg) {
+                tutorialMode.nextSegment()
+                startLeadIn(nextSeg)
+                tutorialMode.setPlaybackMode("playing")
+                animationRef.current = requestAnimationFrame(animate)
+                return
+              }
+            }
+            setIsPlaying(false)
+            tutorialMode.setPlaybackMode("paused")
+            return
+          }
+          animationRef.current = requestAnimationFrame(animate)
+          return
+        }
+
+        // ── NORMAL PLAYBACK ─────────────────────────────────────────────────
+        const currentTime = engine.getTime()
         setPlaybackTime(currentTime)
 
         // Only impose segment boundary when the user explicitly started a tutorial segment
         const activeSeg = tutorialPlayerActive ? activeTutorialSegment : null
-        const segmentEnd = activeSeg ? activeSeg.endTime : playbackDuration
 
-        if (currentTime >= segmentEnd) {
-          if (activeSeg) {
-            tutorialMode.markComplete(activeSeg.id)
-          }
-
-          if (tutorialMode.state.replaySegment && activeSeg) {
-            engine.seek(activeSeg.startTime, { resume: true })
-            setPlaybackTime(activeSeg.startTime)
-            tutorialMode.setPlaybackMode("replay")
-            animationRef.current = requestAnimationFrame(animate)
-            return
-          } else if (tutorialState.autoAdvance && tutorialHasNext) {
-            const nextId = tutorialSegments[tutorialState.currentSegmentIndex + 1]?.id
-            if (nextId) {
-              tutorialMode.nextSegment()
-              const nextSeg = tutorialMode.activeSegment
-              if (nextSeg) {
-                engine.seek(nextSeg.startTime, { resume: true })
-                setPlaybackTime(nextSeg.startTime)
-                tutorialMode.setPlaybackMode("playing")
-              }
-            }
-          } else {
+        if (activeSeg) {
+          // Segment end: cut audio immediately and enter wall-clock post-roll
+          if (currentTime >= activeSeg.endTime && !postRollFiredRef.current) {
+            postRollFiredRef.current = true
             engine.pause()
-            setIsPlaying(false)
-            tutorialMode.setPlaybackMode("paused")
+            handleMarkComplete(activeSeg.id)
+            isPracticePostRollRef.current = true
+            postRollWallStartMsRef.current = performance.now()
+            postRollVisualStartSecRef.current = activeSeg.endTime
           }
-
-          return
-        }
-
-        // If no tutorial mode in place, fall back to natural piece end
-        if (!activeSeg && currentTime >= playbackDuration) {
-          engine.stop()
-          setPlaybackTime(0)
-          setIsPlaying(false)
-          return
+        } else {
+          // No active tutorial segment — fall back to natural piece end
+          if (currentTime >= playbackDuration) {
+            engine.stop()
+            setPlaybackTime(0)
+            setIsPlaying(false)
+            return
+          }
         }
 
         animationRef.current = requestAnimationFrame(animate)
@@ -653,7 +834,7 @@ export default function AppPage() {
         animationRef.current = null
       }
     }
-  }, [isPlaying, isComplete, playbackDuration, tutorialPlayerActive, tutorialState.autoAdvance, tutorialState.replaySegment, tutorialState.currentSegmentIndex, tutorialHasNext, activeTutorialSegment?.id, tutorialSegments])
+  }, [isPlaying, isComplete, playbackDuration, tutorialPlayerActive, tutorialState.autoAdvance, tutorialState.replaySegment, tutorialState.currentSegmentIndex, tutorialHasNext, activeTutorialSegment?.id, tutorialSegments, handleMarkComplete])
 
   // =========================================================================
   // Analysis + Persistence
@@ -661,7 +842,7 @@ export default function AppPage() {
   useEffect(() => {
     if (notesForPlayer.length === 0 || notesForPlayer === MOCK_NOTES) return
     const hash = computePieceHash(
-      notesForPlayer.map((n) => ({ midi: 0, startTime: n.startTime }))
+      notesForPlayer.map((n) => ({ midi: n.midi ?? 0, startTime: n.startTime }))
     )
     setPieceHash(hash)
     const persisted = loadPieceData(hash)
@@ -676,22 +857,82 @@ export default function AppPage() {
     const cached = getCachedAnalysis(pieceHash, ALGO_VERSION)
     if (cached) {
       setSegments(cached.segments)
-      setLessons(cached.lessons)
       setPatternInsights(cached.insights)
       return
     }
     const result = analyzePiece(musicXmlState.events as any, musicXmlState.measureMap)
     setSegments(result.segments)
-    setLessons(result.lessons)
     setPatternInsights(result.insights)
     cacheAnalysis(pieceHash, ALGO_VERSION, result.segments, result.lessons, result.insights)
   }, [musicXmlState, pieceHash])
+
+  // MIDI-only analysis (no MusicXML available)
+  useEffect(() => {
+    if (musicXmlState.status === "ready") return // XML analysis takes priority
+    if (midiState.status !== "ready" || !pieceHash) return
+    const cached = getCachedAnalysis(pieceHash, ALGO_VERSION)
+    if (cached) {
+      setSegments(cached.segments)
+      setPatternInsights(cached.insights)
+      return
+    }
+    const bpm = midiState.bpm ?? 120
+    const notes = midiState.events.map((e) => ({
+      startTime: e.time,
+      duration: e.duration,
+      midi: e.midi,
+      hand: undefined as string | undefined,
+    }))
+    const result = analyzeFromNotes(notes, bpm, midiState.duration)
+    setSegments(result.segments)
+    setPatternInsights(result.insights)
+    cacheAnalysis(pieceHash, ALGO_VERSION, result.segments, result.lessons, result.insights)
+  }, [midiState, musicXmlState.status, pieceHash])
 
   useEffect(() => {
     if (!pieceHash || !isPlaying) return
     const interval = setInterval(() => saveLastPosition(pieceHash, playbackTime), 2000)
     return () => clearInterval(interval)
   }, [pieceHash, isPlaying, playbackTime])
+
+  // Record streak on first play each session
+  useEffect(() => {
+    if (!isPlaying || hasRecordedSessionRef.current) return
+    hasRecordedSessionRef.current = true
+    const result = recordPracticeSession()
+    setProgress(result.progress)
+  }, [isPlaying])
+
+  // Unlock "First Note" achievement when a piece is loaded for the first time
+  useEffect(() => {
+    if (!isComplete || !pieceHash) return
+    const achievement = unlockFirstNoteAchievement()
+    if (achievement) {
+      pushAchievements([achievement])
+      setProgress(loadProgress())
+    }
+  }, [isComplete, pieceHash]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load saved segment completions whenever the piece changes
+  useEffect(() => {
+    if (!pieceHash) return
+    const savedIds = loadCompletedSegments(pieceHash)
+    tutorialMode.setCompletedIds(savedIds)
+  }, [pieceHash]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Save filePath→hash mapping and totalSegmentCount so PieceLibrary can show progress
+  useEffect(() => {
+    if (!pieceHash || tutorialSegments.length === 0) return
+    const fp = selectedPiece?.filePath ?? (file?.name ?? null)
+    if (fp) {
+      recordPiecePathHash(fp, pieceHash)
+      saveCompletedSegments(pieceHash, tutorialMode.state.completedSegmentIds, tutorialSegments.length)
+      setPieceProgress((prev) => ({
+        ...prev,
+        [fp]: { completed: tutorialMode.state.completedSegmentIds.length, total: tutorialSegments.length },
+      }))
+    }
+  }, [pieceHash, tutorialSegments.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalBars = measureMap.length
   const currentBar = useMemo(
@@ -757,15 +998,30 @@ export default function AppPage() {
     if (m) handleSetBarLoop(m.measure, m.measure)
   }, [playbackTime, measureMap, handleSetBarLoop])
 
-  // Play a tutorial segment YouTube-style (play-through, no loop)
-  const handlePlaySegment = useCallback((seg: import("@/types/tutorial").TutorialSegment) => {
+  // Play a tutorial segment: park the audio at seg.startTime, then run a visual
+  // lead-in so section notes are already falling before audio fires.
+  const handlePlaySegment = useCallback(async (seg: import("@/types/tutorial").TutorialSegment) => {
+    // Unlock AudioContext from within this user-gesture callback
+    try { await Tone.start() } catch {}
+
     tutorialMode.selectSegment(seg.id)
     audioEngineRef.current.setLoop({ enabled: false })
     setCurrentLoop(null)
     setLoopSelection("off")
-    audioEngineRef.current.seek(seg.startTime, { resume: true })
-    setPlaybackTime(seg.startTime)
-    setIsPlaying(true)
+    postRollFiredRef.current = false
+
+    // Park audio at the section start (silent, not playing yet)
+    audioEngineRef.current.seek(seg.startTime, { resume: false })
+
+    // Visual lead-in: clock ticks from (startTime - PREROLL) → startTime via wall clock.
+    // Negative visual times are fine — the visualizer positions notes by timeUntilHit.
+    isPracticeLeadInRef.current = true
+    leadInWallStartMsRef.current = performance.now()
+    leadInVisualStartSecRef.current = seg.startTime - PRACTICE_PREROLL_SEC
+    leadInTargetSecRef.current = seg.startTime
+
+    setPlaybackTime(seg.startTime - PRACTICE_PREROLL_SEC)
+    setIsPlaying(true)  // keeps the RAF running
     tutorialMode.setPlaybackMode("playing")
     setTutorialPlayerActive(true)
   }, [tutorialMode])
@@ -836,36 +1092,6 @@ export default function AppPage() {
   )
 
   // =========================================================================
-  // Segment / Lesson navigation
-  // =========================================================================
-  const handleSelectSegment = useCallback(
-    (segment: Segment) => {
-      setCurrentSegmentId(segment.id)
-      const engine = audioEngineRef.current
-      engine.seek(segment.startSec, { resume: autoPlayOnSelect && isPlaying })
-      engine.setLoop({ enabled: true, startSec: segment.startSec, endSec: segment.endSec })
-      setCurrentLoop({ start: segment.startBar, end: segment.endBar })
-      setLoopSelection("custom")
-      setPlaybackTime(segment.startSec)
-      if (autoPlayOnSelect && !isPlaying) handlePlayPause()
-    },
-    [autoPlayOnSelect, isPlaying, handlePlayPause]
-  )
-
-  const handleStartLesson = useCallback(
-    (_lesson: Lesson | null, segment?: Segment) => {
-      if (segment) {
-        setCurrentLessonTitle(segment.title)
-        handleSelectSegment(segment)
-      } else {
-        setCurrentLessonTitle(null)
-      }
-      setActiveTab("player")
-    },
-    [handleSelectSegment]
-  )
-
-  // =========================================================================
   // Render
   // =========================================================================
   return (
@@ -909,12 +1135,6 @@ export default function AppPage() {
                     <Music className="h-3 w-3" />
                     {notesForPlayer.length} notes
                   </Badge>
-                  {sessionMinutes >= 1 && (
-                    <Badge variant="secondary" className="text-xs gap-1 tabular-nums">
-                      <Clock className="h-3 w-3" />
-                      {sessionMinutes} min today
-                    </Badge>
-                  )}
                   {currentLoop && (
                     <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-accent/15 border border-accent/30 text-accent text-xs font-medium">
                       <Repeat className="h-3 w-3" />
@@ -941,8 +1161,14 @@ export default function AppPage() {
               )}
             </div>
 
-            {/* Right side: upload / change piece */}
-            <div className="flex items-center gap-2 shrink-0">
+            {/* Right side: progress HUD + upload */}
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="hidden sm:block">
+                <ProgressHUD progress={progress} sessionMinutes={sessionMinutes} />
+              </div>
+              <div className="block sm:hidden">
+                <ProgressHUD progress={progress} sessionMinutes={sessionMinutes} compact />
+              </div>
               <label>
                 <input
                   type="file"
@@ -953,7 +1179,7 @@ export default function AppPage() {
                 <Button variant={isComplete ? "ghost" : "outline"} size="sm" asChild>
                   <span className="cursor-pointer gap-1.5 text-muted-foreground">
                     <Upload className="h-3.5 w-3.5" />
-                    {isComplete ? "Change piece" : "Upload file"}
+                    <span className="hidden sm:inline">{isComplete ? "Change piece" : "Upload file"}</span>
                   </span>
                 </Button>
               </label>
@@ -995,14 +1221,10 @@ export default function AppPage() {
           {/* MAIN TABS */}
           {/* =============================================================== */}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="mb-6 bg-secondary/60 border border-border/40">
+          <TabsList className="mb-6 bg-secondary/60 border border-border/40 w-full sm:w-auto">
             <TabsTrigger value="player" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
               <Play className="h-3.5 w-3.5" />
               Player
-            </TabsTrigger>
-            <TabsTrigger value="lessons" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
-              <BookOpen className="h-3.5 w-3.5" />
-              Lessons
             </TabsTrigger>
             <TabsTrigger value="insights" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
               <Lightbulb className="h-3.5 w-3.5" />
@@ -1031,15 +1253,16 @@ export default function AppPage() {
                           isPlaying={isPlaying}
                           hasNext={tutorialHasNext}
                           hasPrev={tutorialState.currentSegmentIndex > 0}
+                          preRollSec={PRACTICE_PREROLL_SEC}
                           onPlayPause={handlePlayPause}
                           onNext={() => {
-                            tutorialMode.nextSegment()
-                            const next = tutorialMode.activeSegment
+                            const nextIdx = tutorialState.currentSegmentIndex + 1
+                            const next = tutorialSegments[nextIdx]
                             if (next) handlePlaySegment(next)
                           }}
                           onPrev={() => {
-                            tutorialMode.prevSegment()
-                            const prev = tutorialMode.activeSegment
+                            const prevIdx = Math.max(0, tutorialState.currentSegmentIndex - 1)
+                            const prev = tutorialSegments[prevIdx]
                             if (prev) handlePlaySegment(prev)
                           }}
                           onClose={() => setTutorialPlayerActive(false)}
@@ -1049,7 +1272,7 @@ export default function AppPage() {
                   </div>
                 </div>
                 <PlayerStageCard
-                  notes={notesForPlayer}
+                  notes={notesForVisualizer}
                   pianoKeys={PIANO_KEYS}
                   isComplete={isComplete}
                   playbackTime={playbackTime}
@@ -1060,7 +1283,7 @@ export default function AppPage() {
                   currentLoop={currentLoop}
                   tempo={tempo}
                   activeKeys={activeKeys}
-                  currentLessonTitle={currentLessonTitle}
+                  currentLessonTitle={null}
                   loopEndTimeSec={currentLoopSec?.endSec}
                 />
                 {isComplete && notesForPlayer.length > 0 && (
@@ -1079,26 +1302,33 @@ export default function AppPage() {
 
                 {/* Inline transport bar — sits below the timeline */}
                 {isComplete && (
-                  <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-border/50 bg-card/50 backdrop-blur-sm">
-                    <button
-                      type="button"
-                      onClick={handleReset}
-                      className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                      aria-label="Reset to start"
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handlePlayPause}
-                      className="h-9 w-9 rounded-full bg-accent text-accent-foreground flex items-center justify-center hover:bg-accent/90 transition-colors shrink-0"
-                      aria-label={isPlaying ? "Pause" : "Play"}
-                    >
-                      {isPlaying
-                        ? <Pause className="h-4 w-4" />
-                        : <Play className="h-4 w-4 ml-0.5" />}
-                    </button>
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 rounded-xl border border-border/50 bg-card/50 backdrop-blur-sm">
+                    {/* Always-visible: reset + play + time */}
+                    <div className="flex items-center gap-3 shrink-0">
+                      <button
+                        type="button"
+                        onClick={handleReset}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                        aria-label="Reset to start"
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handlePlayPause}
+                        className="h-9 w-9 rounded-full bg-accent text-accent-foreground flex items-center justify-center hover:bg-accent/90 transition-colors"
+                        aria-label={isPlaying ? "Pause" : "Play"}
+                      >
+                        {isPlaying
+                          ? <Pause className="h-4 w-4" />
+                          : <Play className="h-4 w-4 ml-0.5" />}
+                      </button>
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        {fmtDuration(playbackTime)} / {fmtDuration(playbackDuration)}
+                      </span>
+                    </div>
+                    {/* Tempo row — wraps below on narrow screens */}
+                    <div className="flex items-center gap-2 flex-1 min-w-[160px]">
                       <span className="text-xs text-muted-foreground shrink-0">Tempo</span>
                       <input
                         type="range"
@@ -1109,13 +1339,10 @@ export default function AppPage() {
                         onChange={(e) => handleTempoChange(Number(e.target.value))}
                         className="flex-1 accent-accent min-w-0"
                       />
-                      <span className="text-xs font-medium text-foreground tabular-nums shrink-0 w-28 text-right">
+                      <span className="text-xs font-medium text-foreground tabular-nums shrink-0">
                         {tempo}%{actualBpm ? ` · ${actualBpm} BPM` : ""}
                       </span>
                     </div>
-                    <span className="text-xs text-muted-foreground tabular-nums shrink-0">
-                      {fmtDuration(playbackTime)} / {fmtDuration(playbackDuration)}
-                    </span>
                   </div>
                 )}
               </div>
@@ -1127,6 +1354,7 @@ export default function AppPage() {
                   selectedPiece={selectedPiece}
                   onSelectPiece={handleSelectPiece}
                   defaultCollapsed={isComplete}
+                  pieceProgress={pieceProgress}
                 />
                 <TutorialPanel
                   segments={tutorialSegments}
@@ -1145,8 +1373,9 @@ export default function AppPage() {
                     }
                   }}
                   onNext={() => {
+                    const nextIdx = tutorialState.currentSegmentIndex + 1
+                    const next = tutorialSegments[nextIdx]
                     tutorialMode.nextSegment()
-                    const next = tutorialMode.activeSegment
                     if (next) {
                       audioEngineRef.current.seek(next.startTime, { resume: false })
                       setPlaybackTime(next.startTime)
@@ -1154,15 +1383,16 @@ export default function AppPage() {
                     }
                   }}
                   onPrev={() => {
+                    const prevIdx = Math.max(0, tutorialState.currentSegmentIndex - 1)
+                    const prev = tutorialSegments[prevIdx]
                     tutorialMode.prevSegment()
-                    const prev = tutorialMode.activeSegment
                     if (prev) {
                       audioEngineRef.current.seek(prev.startTime, { resume: false })
                       setPlaybackTime(prev.startTime)
                       setIsPlaying(false)
                     }
                   }}
-                  onMarkComplete={tutorialMode.markComplete}
+                  onMarkComplete={handleMarkComplete}
                   onToggleAutoAdvance={tutorialMode.toggleAutoAdvance}
                   onToggleReplaySegment={tutorialMode.toggleReplaySegment}
                 />
@@ -1209,30 +1439,25 @@ export default function AppPage() {
           </TabsContent>
 
           {/* --------------------------------------------------------------- */}
-          {/* LESSONS TAB */}
-          {/* --------------------------------------------------------------- */}
-          <TabsContent value="lessons">
-            <LessonsTab
-              lessons={lessons}
-              segments={segments}
-              isComplete={isComplete}
-              onStartLesson={handleStartLesson}
-            />
-          </TabsContent>
-
-          {/* --------------------------------------------------------------- */}
           {/* INSIGHTS TAB */}
           {/* --------------------------------------------------------------- */}
           <TabsContent value="insights">
             <InsightsTab
-              insights={patternInsights.length > 0 ? patternInsights : FALLBACK_PATTERN_INSIGHTS}
+              insights={patternInsights}
               isComplete={isComplete}
+              pieceLoaded={isComplete || midiState.status === "ready"}
               onPracticeSection={handlePracticeSection}
             />
           </TabsContent>
         </Tabs>
             </div>
       </main>
+
+      {/* Achievement toast */}
+      <AchievementToast
+        achievement={achievementQueue[0] ?? null}
+        onDismiss={dismissAchievement}
+      />
 
       {/* Keyboard shortcuts overlay */}
       {showShortcuts && (
