@@ -79,6 +79,7 @@ export function buildMidiMeasureMap(
   for (let t = 0; t < duration; t += secPerBar) {
     map.push({
       measure: bar,
+      playthroughIndex: 0,
       startSec: t,
       endSec: Math.min(t + secPerBar, duration),
     })
