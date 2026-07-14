@@ -1,9 +1,14 @@
 "use client"
 
 import * as Tone from "tone"
+import { SamplerVoicePool } from "./audio/voicePool"
+import { computeNoteScheduling, snapTime } from "./audio/noteScheduling"
 
 export interface Note {
-  id?: number | string
+  /** Stable, unique per note *instance* — required so overlapping notes of
+   *  the same pitch (rapid repeats, e.g. La Campanella) can be attacked and
+   *  released independently instead of colliding. See SamplerVoicePool. */
+  id: string | number
   note: string // e.g., "C4", "C#4", "Ab3"
   hand?: string
   startTime: number // in seconds
@@ -70,7 +75,7 @@ const SALAMANDER_BASE_URL = "/salamander/"
  * Main Piano Audio Engine with sustain pedal support
  */
 export class PianoAudioEngine {
-  private sampler: Tone.Sampler | null = null
+  private voicePool: SamplerVoicePool | null = null
   private compressor: Tone.Compressor | null = null
   private eq: Tone.EQ3 | null = null
   private reverb: Tone.Reverb | null = null
@@ -87,22 +92,27 @@ export class PianoAudioEngine {
   private basePlaybackRate: number = 1
   private uiTempo: number = 100
 
+  // Synthetic ids for one-off live notes (playNoteNow), which aren't part of
+  // the scheduled piece and so have no pre-existing note id of their own.
+  private liveNoteSeq = 0
+
   // Sustain pedal tracking
   private pedalDown: boolean = false
-  private heldByPedal: Map<string, { releaseTime: number }> = new Map()
-  private heldCounts: Map<string, number> = new Map() // for note overlaps
 
   // Loop state
   private loopEnabled: boolean = false
   private loopStartSec: number = 0
   private loopEndSec: number = 0
   private isLoopJumping: boolean = false
+  private loopRepeatTarget: number | null = null
+  private loopRepeatCount: number = 0
 
   // Metronome
   private metronomeLoop: Tone.Loop | null = null
   private metronomeSynth: Tone.Synth | null = null
   private metronomeEnabled: boolean = false
   private metronomeBpm: number = 120
+  private countInBeats: number = 0
 
   // Debug
   private debug: boolean = false
@@ -128,42 +138,31 @@ export class PianoAudioEngine {
       this.reverb.connect(this.limiter)
       this.limiter.toDestination()
 
-      const samplerPromise = new Promise<void>((resolve, reject) => {
-        let timeout: NodeJS.Timeout
+      // A small pool of Samplers sharing one set of decoded buffers, so
+      // overlapping instances of the same pitch get independent voices —
+      // see SamplerVoicePool for why a single Tone.Sampler can't do this.
+      this.voicePool = new SamplerVoicePool()
 
-        this.sampler = new Tone.Sampler({
+      let timeout: NodeJS.Timeout
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Sampler load timeout after 30 seconds")), 30000)
+      })
+
+      await Promise.race([
+        this.voicePool.load({
           urls: SALAMANDER_SAMPLES,
           baseUrl: SALAMANDER_BASE_URL,
           attack: 0.004,
           release: 0.6,
-          onload: () => {
-            clearTimeout(timeout)
-            console.log("Salamander piano samples loaded successfully")
-            this.state = { status: "ready", error: null }
-            resolve()
-          },
-          onerror: (error: Error) => {
-            clearTimeout(timeout)
-            const errorMsg = `Failed to load piano samples: ${error.message}`
-            console.error(errorMsg)
-            this.state = { status: "error", error: errorMsg }
-            reject(new Error(errorMsg))
-          },
-        })
+        }),
+        timeoutPromise,
+      ])
+      clearTimeout(timeout!)
 
-        // Connect: sampler → eq → compressor → reverb → limiter
-        this.sampler.connect(this.eq!)
+      // Connect: voice pool → eq → compressor → reverb → limiter
+      this.voicePool.connect(this.eq!)
 
-        // Timeout after 30 seconds
-        timeout = setTimeout(() => {
-          const timeoutMsg = "Sampler load timeout after 30 seconds"
-          console.error(timeoutMsg)
-          this.state = { status: "error", error: timeoutMsg }
-          reject(new Error(timeoutMsg))
-        }, 30000)
-      })
-
-      await samplerPromise
+      console.log("Salamander piano samples loaded successfully")
       this.state = { status: "ready", error: null }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : "Unknown error"
@@ -180,8 +179,44 @@ export class PianoAudioEngine {
     this.notes = newNotes
     this.pedalEvents = pedalEvents ?? []
     // Initialize pedal state from pedal events (what state is it in at t=0?)
-    this.pedalDown = this.pedalEvents.length > 0 && this.pedalEvents[0]?.down ? true : false
+    this.pedalDown = this.getPedalStateAt(0)
     this.scheduleNotes()
+  }
+
+  /**
+   * Sustain pedal state at a given piece-time, derived from the immutable
+   * pedalEvents list (a recorded "down" event means the pedal was UP before
+   * that instant, so the state defaults to false until the first event).
+   */
+  private getPedalStateAt(t: number): boolean {
+    let state = false
+    for (const pe of this.pedalEvents) {
+      if (pe.time <= t) state = pe.down
+      else break
+    }
+    return state
+  }
+
+  /**
+   * Public: sustain pedal state at the current playback position.
+   * Computed on demand from pedalEvents rather than a lazily-updated flag,
+   * so it stays correct immediately after seek()/pause()/resume().
+   */
+  getPedalState(): boolean {
+    return this.getPedalStateAt(this.getTime())
+  }
+
+  /**
+   * Public: 0..1 phase within the current beat, for a visual metronome pulse.
+   * Takes the piece's bpm explicitly (rather than relying on metronomeBpm,
+   * which is only ever set when the audible metronome is toggled on) so the
+   * beat-flash stays in sync even if the click track has never been enabled.
+   */
+  getBeatPhase(bpm: number): number {
+    const secPerBeat = 60 / (Math.max(20, bpm) * this.basePlaybackRate)
+    if (!isFinite(secPerBeat) || secPerBeat <= 0) return 0
+    const t = Tone.Transport.seconds
+    return (t % secPerBeat) / secPerBeat
   }
 
   /**
@@ -190,126 +225,60 @@ export class PianoAudioEngine {
    */
   private scheduleNotes(): void {
     // Cancel existing parts
+    // Pass an explicit 0 rather than relying on Part.stop()'s default "now"
+    // argument: Tone computes that via a ticks<->seconds round-trip on the
+    // Transport's clock, which can come out as a tiny negative float (e.g.
+    // -1.09e-11) right after Transport.seconds is reset to 0 — and Part.stop()
+    // rejects any negative value. The part is disposed immediately after
+    // anyway, so the exact stop time is irrelevant.
     if (this.attackPart) {
-      this.attackPart.stop()
+      this.attackPart.stop(0)
       this.attackPart.dispose()
     }
     if (this.releasePart) {
-      this.releasePart.stop()
+      this.releasePart.stop(0)
       this.releasePart.dispose()
     }
     if (this.pedalPart) {
-      this.pedalPart.stop()
+      this.pedalPart.stop(0)
       this.pedalPart.dispose()
     }
 
-    if (!this.sampler || this.notes.length === 0) return
+    if (!this.voicePool || this.notes.length === 0) return
 
-    // Build pedal state map: time -> isDown
-    const pedalStateMap = new Map<number, boolean>()
-    for (const pe of this.pedalEvents) {
-      pedalStateMap.set(pe.time, pe.down)
-    }
+    // One Part event per note instance (never grouped/bucketed by time or
+    // pitch) so that two notes of the same pitch starting a few ms apart —
+    // e.g. the rapid repeated notes in Liszt's La Campanella — are always
+    // scheduled, and released, as fully independent voices via the
+    // SamplerVoicePool, keyed by each note's own stable id rather than by
+    // pitch. Release times no longer need clamping against the next
+    // same-pitch attack (as the old single-Sampler design required): each
+    // note's release only ever targets the voice its own attack landed on,
+    // so an overlapping repeat rings on its own voice instead of colliding.
+    const { attackEvents, releaseEvents } = computeNoteScheduling(
+      this.notes,
+      this.pedalEvents,
+      this.basePlaybackRate,
+      (t) => this.getPedalStateAt(t)
+    )
 
-    // ========= ATTACK SCHEDULING =========
-    // Group notes by startTime for chords.
-    // Snap to a 2 ms grid so that floating-point imprecision in parsed note
-    // timings doesn't split a single chord into adjacent micro-events.
-    const CHORD_SNAP_SEC = 0.002
-    const attackEvents: Array<[number, Note[]]> = []
-    const attackTimeMap = new Map<number, Note[]>()
+    this.attackPart = new Tone.Part((time, note: Note) => {
+      const vel = note.velocity ?? 0.8
+      this.voicePool!.triggerAttack(String(note.id), note.note, time, vel)
+      if (this.debug) console.log(`[Voice] triggerAttack: ${note.note} (id=${note.id}) at ${time.toFixed(3)}s`)
+    }, attackEvents.map((e): [number, Note] => [e.time, e.note]))
 
-    for (const note of this.notes) {
-      const rawTime = note.startTime / this.basePlaybackRate
-      // Round to the nearest 2 ms bucket
-      const snappedTime = Math.round(rawTime / CHORD_SNAP_SEC) * CHORD_SNAP_SEC
-      if (!attackTimeMap.has(snappedTime)) {
-        attackTimeMap.set(snappedTime, [])
-      }
-      attackTimeMap.get(snappedTime)!.push(note)
-    }
-
-    for (const [time, notes] of Array.from(attackTimeMap.entries()).sort((a, b) => a[0] - b[0])) {
-      attackEvents.push([time, notes])
-    }
-
-    // Create attack Part.
-    // We do NOT call triggerRelease before triggerAttack here: scheduling a
-    // release and an attack at the exact same AudioContext timestamp causes the
-    // sampler to treat them as conflicting envelope commands on the same voice,
-    // which silences chord notes — especially when two hands play the same
-    // pitch simultaneously.  Repeated-note re-triggering under pedal is handled
-    // by the release Part scheduling the old voice's release at the correct
-    // pedal-up time, which is always strictly before the next attack.
-    this.attackPart = new Tone.Part((time, eventNotes: Note[]) => {
-      for (const note of eventNotes) {
-        const vel = note.velocity ?? 0.8
-        this.sampler!.triggerAttack(note.note, time, vel)
-        if (this.debug) console.log(`[Pedal] triggerAttack: ${note.note} at ${time.toFixed(3)}s`)
-      }
-    }, attackEvents)
-
-    // ========= RELEASE SCHEDULING =========
-    // For each note, compute its release time (may be delayed by pedal)
-    const releaseEvents: Array<[number, Note[]]> = []
-    const releaseTimeMap = new Map<number, Note[]>()
-
-    for (const note of this.notes) {
-      const nominalReleaseTime = note.startTime + note.duration
-      let actualReleaseTime = nominalReleaseTime
-
-      // Check if pedal is down at the nominal release time
-      let pedalAtRelease = false
-      if (this.pedalEvents.length > 0) {
-        // Find the pedal state just before/at the release time
-        let lastPedalState = this.pedalDown // initial state at t=0
-        for (const pe of this.pedalEvents) {
-          if (pe.time <= nominalReleaseTime) {
-            lastPedalState = pe.down
-          } else {
-            break
-          }
-        }
-        pedalAtRelease = lastPedalState
-
-        // If pedal is down, find the next pedal-up event
-        if (pedalAtRelease) {
-          for (const pe of this.pedalEvents) {
-            if (pe.time > nominalReleaseTime && !pe.down) {
-              actualReleaseTime = pe.time
-              break
-            }
-          }
-        }
-      }
-
-      const rawReleaseTime = actualReleaseTime / this.basePlaybackRate
-      const scheduledReleaseTime = Math.round(rawReleaseTime / CHORD_SNAP_SEC) * CHORD_SNAP_SEC
-      if (!releaseTimeMap.has(scheduledReleaseTime)) {
-        releaseTimeMap.set(scheduledReleaseTime, [])
-      }
-      releaseTimeMap.get(scheduledReleaseTime)!.push(note)
-    }
-
-    for (const [time, notes] of Array.from(releaseTimeMap.entries()).sort((a, b) => a[0] - b[0])) {
-      releaseEvents.push([time, notes])
-    }
-
-    // Create release Part
-    this.releasePart = new Tone.Part((time, eventNotes: Note[]) => {
-      for (const note of eventNotes) {
-        this.sampler!.triggerRelease(note.note, time)
-        if (this.debug) console.log(`[Pedal] triggerRelease: ${note.note} at ${time.toFixed(3)}s`)
-      }
-    }, releaseEvents)
+    this.releasePart = new Tone.Part((time, note: Note) => {
+      this.voicePool!.triggerRelease(String(note.id), time)
+      if (this.debug) console.log(`[Voice] triggerRelease: ${note.note} (id=${note.id}) at ${time.toFixed(3)}s`)
+    }, releaseEvents.map((e): [number, Note] => [e.time, e.note]))
 
     // ========= PEDAL CHANGE SCHEDULING =========
     // Schedule pedal changes to track state (for debugging)
-    const pedalChangeEvents: Array<[number, PedalEvent]> = []
-    for (const pe of this.pedalEvents) {
-      const scheduledTime = Math.round((pe.time / this.basePlaybackRate) / CHORD_SNAP_SEC) * CHORD_SNAP_SEC
-      pedalChangeEvents.push([scheduledTime, pe])
-    }
+    const pedalChangeEvents: Array<[number, PedalEvent]> = this.pedalEvents.map((pe) => [
+      snapTime(pe.time / this.basePlaybackRate),
+      pe,
+    ])
 
     this.pedalPart = new Tone.Part((time, evt: PedalEvent) => {
       this.pedalDown = evt.down
@@ -331,13 +300,22 @@ export class PianoAudioEngine {
    * Start playback (must be called from a user gesture like click)
    */
   async play(): Promise<void> {
-    if (this.state.status !== "ready" || !this.sampler) {
+    if (this.state.status !== "ready" || !this.voicePool) {
       throw new Error(`Cannot play: engine status is ${this.state.status}`)
     }
 
     // Ensure audio context is started (required before Transport.start)
     await Tone.start()
-    
+
+    // Count-in only applies to a genuine fresh start (position 0, not yet
+    // running) — not to resuming a mid-piece pause, which would otherwise
+    // click 4 beats every time the user hits Play/Pause.
+    const isFreshStart = Tone.Transport.state === "stopped" && Tone.Transport.seconds === 0
+    if (isFreshStart && this.countInBeats > 0) {
+      this.playCountIn()
+      return
+    }
+
     // Start transport if it's stopped
     if (Tone.Transport.state === "stopped") {
       Tone.Transport.start()
@@ -345,6 +323,40 @@ export class PianoAudioEngine {
       // Resume from pause
       Tone.Transport.start()
     }
+  }
+
+  /** Number of metronome clicks to play before a fresh start begins advancing. 0 disables. */
+  setCountIn(beats: number): void {
+    this.countInBeats = Math.max(0, Math.floor(beats))
+  }
+
+  private ensureMetronomeSynth(): Tone.Synth {
+    if (!this.metronomeSynth) {
+      this.metronomeSynth = new Tone.Synth({
+        oscillator: { type: "square" },
+        envelope: { attack: 0.001, decay: 0.06, sustain: 0, release: 0.02 },
+      })
+      this.metronomeSynth.volume.value = -4
+      this.metronomeSynth.toDestination()
+    }
+    return this.metronomeSynth
+  }
+
+  /**
+   * Clicks countInBeats times at the metronome's tempo using the AudioContext
+   * clock directly (not the Transport, which hasn't started yet), then starts
+   * the Transport exactly when the last click finishes. This leaves
+   * Transport.seconds/seek/tempo math completely untouched — the Transport
+   * simply begins later than it would have otherwise.
+   */
+  private playCountIn(): void {
+    const synth = this.ensureMetronomeSynth()
+    const secPerBeat = 60 / (this.metronomeBpm * this.basePlaybackRate)
+    const now = Tone.now()
+    for (let i = 0; i < this.countInBeats; i++) {
+      synth.triggerAttackRelease("C7", "64n", now + i * secPerBeat)
+    }
+    Tone.Transport.start(now + this.countInBeats * secPerBeat)
   }
 
   /**
@@ -361,17 +373,14 @@ export class PianoAudioEngine {
     Tone.Transport.stop()
     Tone.Transport.cancel() // Cancel all scheduled notes
     Tone.Transport.seconds = 0
-    
-    // Release all held notes immediately
-    if (this.sampler) {
-      this.sampler.triggerRelease(Array.from(this.heldByPedal.keys()), 0)
-    }
-    
+
+    // Release every ringing voice on every pool member immediately so
+    // nothing rings after a stop, even if it was still held by the pedal.
+    this.voicePool?.releaseAll(Tone.now())
+
     // Reset pedal state
     this.pedalDown = false
-    this.heldByPedal.clear()
-    this.heldCounts.clear()
-    
+
     this.rescheduleNotes() // Re-schedule from the beginning
   }
 
@@ -406,6 +415,10 @@ export class PianoAudioEngine {
     // Cancel any previously-scheduled note events and rebuild the Part
     Tone.Transport.cancel()
 
+    // Release any voices still ringing from before the seek so they don't
+    // keep sounding after the jump.
+    this.voicePool?.releaseAll(Tone.now())
+
     // Move transport head
     const transportTime = clamped / this.basePlaybackRate
     Tone.Transport.seconds = transportTime
@@ -426,11 +439,19 @@ export class PianoAudioEngine {
 
   /**
    * Enable / disable looping with a given range (in piece-time seconds).
+   * @param repeatTarget  Number of wraps to allow before auto-disabling the
+   *   loop (undefined/null = loop forever, matching prior behavior). Only
+   *   takes effect when (re)enabling the loop — resets the wrap counter.
    */
-  setLoop(opts: { enabled: boolean; startSec?: number; endSec?: number }): void {
+  setLoop(opts: { enabled: boolean; startSec?: number; endSec?: number; repeatTarget?: number | null }): void {
     this.loopEnabled = opts.enabled
     if (opts.startSec !== undefined) this.loopStartSec = Math.max(0, opts.startSec)
     if (opts.endSec !== undefined) this.loopEndSec = Math.max(0, opts.endSec)
+
+    if (opts.enabled) {
+      this.loopRepeatCount = 0
+      this.loopRepeatTarget = opts.repeatTarget ?? null
+    }
 
     // Ensure start < end
     if (this.loopStartSec >= this.loopEndSec) {
@@ -443,23 +464,34 @@ export class PianoAudioEngine {
     return this.loopEnabled
   }
 
+  /** How many times the current loop has wrapped since it was (re)enabled. */
+  getLoopRepeatCount(): number {
+    return this.loopRepeatCount
+  }
+
   /**
    * Must be called once per animation frame while playing.
-   * Returns true if a loop-wrap occurred (so the caller can update UI immediately).
+   * Returns "wrapped" if the loop jumped back to its start, "completed" if it
+   * just hit its repeat target and disabled itself, or "none" otherwise.
    */
-  tickLoop(): boolean {
-    if (!this.loopEnabled || this.isLoopJumping) return false
+  tickLoop(): "wrapped" | "completed" | "none" {
+    if (!this.loopEnabled || this.isLoopJumping) return "none"
     const pos = this.getTime()
     if (pos >= this.loopEndSec) {
+      this.loopRepeatCount++
+      if (this.loopRepeatTarget !== null && this.loopRepeatCount >= this.loopRepeatTarget) {
+        this.loopEnabled = false
+        return "completed"
+      }
       this.isLoopJumping = true
       // Seek 1.5s before the loop section so notes have time to fall in from
       // the top of the visualizer before the first note hits the strike line.
       const LEAD_IN_SEC = 1.5
       this.seek(Math.max(0, this.loopStartSec - LEAD_IN_SEC), { resume: true })
       this.isLoopJumping = false
-      return true
+      return "wrapped"
     }
-    return false
+    return "none"
   }
 
   // ---------------------------------------------------------------------------
@@ -484,17 +516,18 @@ export class PianoAudioEngine {
     this.uiTempo = uiTempo
     const rate = uiTempo / 100
 
-    const wasPlaying = Tone.Transport.state === "started"
     const currentTime = Tone.Transport.seconds
     const oldRate = this.basePlaybackRate
 
     this.basePlaybackRate = rate
     this.scheduleNotes()
 
-    if (wasPlaying) {
-      const pieceTime = currentTime * oldRate
-      Tone.Transport.seconds = pieceTime / rate
-    }
+    // Re-anchor Transport.seconds to the same piece-time position under the new
+    // rate. Must run regardless of play/pause state — otherwise a tempo change
+    // made while paused leaves Transport.seconds stale, and resuming jumps the
+    // playhead to the wrong position.
+    const pieceTime = currentTime * oldRate
+    Tone.Transport.seconds = pieceTime / rate
 
     console.log(`Tempo set to ${uiTempo}% => playback rate ${rate.toFixed(3)}x`)
   }
@@ -520,24 +553,30 @@ export class PianoAudioEngine {
    * Dispose and cleanup
    */
   dispose(): void {
+    // Pass an explicit 0 rather than relying on Part.stop()'s default "now"
+    // argument: Tone computes that via a ticks<->seconds round-trip on the
+    // Transport's clock, which can come out as a tiny negative float (e.g.
+    // -1.09e-11) right after Transport.seconds is reset to 0 — and Part.stop()
+    // rejects any negative value. The part is disposed immediately after
+    // anyway, so the exact stop time is irrelevant.
     if (this.attackPart) {
-      this.attackPart.stop()
+      this.attackPart.stop(0)
       this.attackPart.dispose()
       this.attackPart = null
     }
     if (this.releasePart) {
-      this.releasePart.stop()
+      this.releasePart.stop(0)
       this.releasePart.dispose()
       this.releasePart = null
     }
     if (this.pedalPart) {
-      this.pedalPart.stop()
+      this.pedalPart.stop(0)
       this.pedalPart.dispose()
       this.pedalPart = null
     }
-    if (this.sampler) {
-      this.sampler.dispose()
-      this.sampler = null
+    if (this.voicePool) {
+      this.voicePool.dispose()
+      this.voicePool = null
     }
     if (this.compressor) {
       this.compressor.dispose()
@@ -556,7 +595,7 @@ export class PianoAudioEngine {
       this.limiter = null
     }
     if (this.metronomeLoop) {
-      this.metronomeLoop.stop()
+      this.metronomeLoop.stop(0)
       this.metronomeLoop.dispose()
       this.metronomeLoop = null
     }
@@ -564,8 +603,6 @@ export class PianoAudioEngine {
       this.metronomeSynth.dispose()
       this.metronomeSynth = null
     }
-    this.heldByPedal.clear()
-    this.heldCounts.clear()
   }
 
   // ---------------------------------------------------------------------------
@@ -585,29 +622,43 @@ export class PianoAudioEngine {
 
   private _rebuildMetronomeLoop(): void {
     if (this.metronomeLoop) {
-      this.metronomeLoop.stop()
+      this.metronomeLoop.stop(0)
       this.metronomeLoop.dispose()
       this.metronomeLoop = null
     }
     if (!this.metronomeEnabled) return
 
-    if (!this.metronomeSynth) {
-      this.metronomeSynth = new Tone.Synth({
-        oscillator: { type: "square" },
-        envelope: { attack: 0.001, decay: 0.06, sustain: 0, release: 0.02 },
-      })
-      this.metronomeSynth.volume.value = -4
-      this.metronomeSynth.toDestination()
-    }
+    const synth = this.ensureMetronomeSynth()
 
     // Beat interval in transport-seconds.
     // The engine uses basePlaybackRate to slow down notes at reduced tempo,
     // so transport-time runs faster than piece-time. The metronome must match.
     const transportSecPerBeat = 60 / (this.metronomeBpm * this.basePlaybackRate)
     this.metronomeLoop = new Tone.Loop((time) => {
-      this.metronomeSynth!.triggerAttackRelease("C7", "64n", time)
+      synth.triggerAttackRelease("C7", "64n", time)
     }, transportSecPerBeat)
     this.metronomeLoop.start(0)
+  }
+
+  /**
+   * Set master volume. v is 0–1 linear (0 = silent, 1 = full).
+   */
+  setVolume(v: number): void {
+    if (!this.voicePool) return
+    this.voicePool.setVolumeDb(v <= 0 ? -Infinity : Tone.gainToDb(v))
+  }
+
+  /**
+   * Trigger a single one-off note immediately, outside the scheduled
+   * Tone.Part system — used by live (non-MIDI) input such as a clicked
+   * on-screen key or a computer-keyboard press. Each call gets its own
+   * synthetic id so rapid repeats of the same key (real players do this)
+   * get independent voices too, same as scheduled playback.
+   */
+  playNoteNow(note: string, velocity = 0.8, durationSec: number = 0.5): void {
+    if (this.state.status !== "ready" || !this.voicePool) return
+    const id = `live-${this.liveNoteSeq++}`
+    this.voicePool.triggerAttackRelease(id, note, Tone.now(), durationSec, velocity)
   }
 
   /**

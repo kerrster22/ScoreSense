@@ -18,11 +18,8 @@ import type { LoopOption, HandOption, NamedLoop, HandAudioMode, HandVisualMode }
 interface PracticeControlsProps {
   isComplete: boolean
   loopSelection: string
-  handSelection: string
   loopOptions: LoopOption[]
-  handOptions: HandOption[]
   onLoopChange: (value: string) => void
-  onHandChange: (value: string) => void
   // Bar-based loop input
   totalBars: number
   onSetBarLoop: (startBar: number, endBar: number) => void
@@ -38,7 +35,22 @@ interface PracticeControlsProps {
   handVisualMode: HandVisualMode
   onHandAudioModeChange: (mode: HandAudioMode) => void
   onHandVisualModeChange: (mode: HandVisualMode) => void
+  // Loop repeat-count (applies to bar/named/timeline loops, not Quick Loop)
+  loopRepeatTarget?: number | null
+  onLoopRepeatTargetChange?: (target: number | null) => void
+  // Auto-increase tempo each successful loop pass
+  tempoRampActive?: boolean
+  onTempoRampToggle?: () => void
 }
+
+const REPEAT_OPTIONS: { value: number | null; label: string }[] = [
+  { value: null, label: "∞" },
+  { value: 1, label: "1x" },
+  { value: 2, label: "2x" },
+  { value: 3, label: "3x" },
+  { value: 5, label: "5x" },
+  { value: 10, label: "10x" },
+]
 
 const HAND_AUDIO_OPTIONS: { value: HandAudioMode; label: string; icon: React.ReactNode }[] = [
   { value: "both", label: "Both", icon: <Volume2 className="h-3 w-3" /> },
@@ -57,11 +69,8 @@ const HAND_VISUAL_OPTIONS: { value: HandVisualMode; label: string }[] = [
 export function PracticeControls({
   isComplete,
   loopSelection,
-  handSelection,
   loopOptions,
-  handOptions,
   onLoopChange,
-  onHandChange,
   totalBars,
   onSetBarLoop,
   namedLoops,
@@ -74,6 +83,10 @@ export function PracticeControls({
   handVisualMode,
   onHandAudioModeChange,
   onHandVisualModeChange,
+  loopRepeatTarget = null,
+  onLoopRepeatTargetChange,
+  tempoRampActive = false,
+  onTempoRampToggle,
 }: PracticeControlsProps) {
   const [barStart, setBarStart] = useState("")
   const [barEnd, setBarEnd] = useState("")
@@ -169,6 +182,47 @@ export function PracticeControls({
             </Button>
           )}
         </div>
+
+        {/* Repeat count */}
+        {onLoopRepeatTargetChange && (
+          <div className="flex items-center gap-1.5 mt-2">
+            <span className="text-[11px] text-muted-foreground shrink-0">Repeat</span>
+            <div className="flex flex-wrap gap-1">
+              {REPEAT_OPTIONS.map((opt) => (
+                <button
+                  key={opt.label}
+                  type="button"
+                  disabled={!isComplete}
+                  onClick={() => onLoopRepeatTargetChange(opt.value)}
+                  className={`text-[11px] font-medium px-1.5 py-0.5 rounded-md border transition-colors disabled:opacity-40 ${
+                    loopRepeatTarget === opt.value
+                      ? "border-accent bg-accent/10 text-accent"
+                      : "border-border text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Tempo ramp */}
+        {onTempoRampToggle && (
+          <button
+            type="button"
+            disabled={!isComplete}
+            onClick={onTempoRampToggle}
+            title="Automatically speed up by 5% each time the loop repeats"
+            className={`mt-2 w-full text-[11px] font-medium px-2 py-1.5 rounded-md border transition-colors disabled:opacity-40 ${
+              tempoRampActive
+                ? "border-accent bg-accent/10 text-accent"
+                : "border-border text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {tempoRampActive ? "Tempo Ramp: On (+5%/pass)" : "Tempo Ramp: Off"}
+          </button>
+        )}
 
         {/* Save current loop */}
         {loopSelection !== "off" && (

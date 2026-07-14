@@ -87,10 +87,26 @@ function buildMedianPitchAssigner(trackIndices: number[], events: NoteEvent[]): 
   return (e: NoteEvent) => (leftSet.has(e.track) ? "left" : "right")
 }
 
+export type HandAssignerConfidence = "high" | "low"
+
+export interface HandAssignerResult {
+  assign: HandAssigner
+  /**
+   * "high" when the MIDI file itself gives an unambiguous per-hand split
+   * (named tracks, multiple tracks, or multiple channels) — reliable enough
+   * to be trusted over a score's engraved staff assignment, which can place
+   * a passage on the "wrong" staff for legibility (cross-staff engraving,
+   * common in virtuoso piano writing). "low" means this fell back to
+   * pitch-gap voice separation on a single track/channel, which is weaker
+   * than an actual score's staff data when one is available.
+   */
+  confidence: HandAssignerConfidence
+}
+
 // ---------------------------------------------------------------------------
 // Main export
 // ---------------------------------------------------------------------------
-export function buildHandAssigner(tracks: TrackInfo[], events: NoteEvent[]): HandAssigner {
+export function buildHandAssigner(tracks: TrackInfo[], events: NoteEvent[]): HandAssignerResult {
   const tracksWithNotes = tracks.filter(t => t.noteCount > 0)
 
   // ── Case 1 & 2: Multiple tracks with notes ──────────────────────────────
@@ -114,17 +130,20 @@ export function buildHandAssigner(tracks: TrackInfo[], events: NoteEvent[]): Han
             events
           )
         : null
-      return (e: NoteEvent) =>
-        assignment.get(e.track) ??
-        (fallback ? fallback(e) : (e.midi > 60 ? "right" : "left"))
+      return {
+        assign: (e: NoteEvent) =>
+          assignment.get(e.track) ??
+          (fallback ? fallback(e) : (e.midi > 60 ? "right" : "left")),
+        confidence: "high",
+      }
     }
 
     // Case 2: no keyword matches — use median pitch for all tracks.
     // This correctly handles 2-staff, 3-staff, and 4-staff (SATB) MIDI files.
-    return buildMedianPitchAssigner(
-      tracksWithNotes.map(t => t.index),
-      events
-    )
+    return {
+      assign: buildMedianPitchAssigner(tracksWithNotes.map(t => t.index), events),
+      confidence: "high",
+    }
   }
 
   // ── Case 3: Single track, multiple channels ──────────────────────────────
@@ -143,9 +162,12 @@ export function buildHandAssigner(tracks: TrackInfo[], events: NoteEvent[]): Han
     channelRanked.sort((a, b) => a.median - b.median)
     const halfIdx = Math.floor(channelRanked.length / 2)
     const leftChannels = new Set(channelRanked.slice(0, halfIdx).map(r => r.ch))
-    return (e: NoteEvent) => (leftChannels.has(e.channel) ? "left" : "right")
+    return {
+      assign: (e: NoteEvent) => (leftChannels.has(e.channel) ? "left" : "right"),
+      confidence: "high",
+    }
   }
 
   // ── Case 4: Voice separation ─────────────────────────────────────────────
-  return buildVoiceSeparator(events)
+  return { assign: buildVoiceSeparator(events), confidence: "low" }
 }

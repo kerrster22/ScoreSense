@@ -19,6 +19,8 @@ export interface Note {
   staff?: number
   voice?: string
   measure?: number
+  // Suggested finger (1-5), when present in the source MusicXML
+  fingering?: number
   // Source provenance and confidence (0..1)
   source?: { midiId?: string; xmlId?: string; confidence: number }
 }
@@ -54,6 +56,8 @@ export interface PatternInsight {
   occurrences?: string[]
   /** Similarity/confidence score 0–1 */
   score?: number
+  /** One chord symbol per bar in range (from the shared chord detector), for harmonic context. */
+  chordProgression?: string[]
 }
 
 export interface LoopRange {
@@ -141,4 +145,13 @@ export interface PiecePersistence {
     lessons: Lesson[]
     insights: PatternInsight[]
   }
+  /** Live-scoring miss counts by bar number, accumulated across sessions. */
+  barMissCounts?: Record<number, number>
+  /** Coarse "why was this missed" tag counts (left-hand-leap, fast-passage, etc.), for the Adaptive Practice Coach. */
+  weaknessTags?: Record<string, number>
+  /** Practice-history log: one entry appended per session with minutes practiced. */
+  sessions?: { date: string; minutes: number }[]
+  lastPlayedAt?: string
+  /** Cached 1-5 difficulty heuristic so it isn't recomputed every library render. */
+  difficulty?: number
 }

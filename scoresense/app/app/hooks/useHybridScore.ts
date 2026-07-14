@@ -63,7 +63,21 @@ export function useHybridScore(opts: { midiUrl?: string | null; xmlUrl?: string 
         isOrnament: x.isOrnament,
       }) as XmlNoteEvent)
 
-      const result = alignMidiWithMusicXml(midiEvents, xmlEvents)
+      // The MIDI file's own track/channel split (buildHandAssigner) is often
+      // more reliable than the score's engraved staff for hand assignment —
+      // scores routinely print a passage on the "wrong" staff for legibility
+      // (cross-staff notation), while the MIDI follows the actually-performed
+      // hand. Prefer it over XML staff whenever it's a confident split.
+      const { assign, confidence: handConfidence } = buildHandAssigner(midiState.tracks ?? [], midiState.events)
+      const midiById = new Map(midiState.events.map((e) => [e.id, e]))
+
+      const result = alignMidiWithMusicXml(midiEvents, xmlEvents, {
+        midiHandHint: (id) => {
+          const e = midiById.get(id)
+          return e ? assign(e) : undefined
+        },
+        preferMidiHand: handConfidence === "high",
+      })
       const duration = midiState.duration ?? xmlState.duration
       setState({ status: "ready", events: result.events, duration, stats: result.stats, pedalEvents: midiState.pedalEvents })
       return
@@ -71,16 +85,15 @@ export function useHybridScore(opts: { midiUrl?: string | null; xmlUrl?: string 
 
     // MIDI only
     if (midiState.status === "ready" && (xmlState.status === "idle" || !opts.xmlUrl)) {
-      const handAssigner = buildHandAssigner(midiState.tracks ?? [], midiState.events)
-      const multiTrack = (midiState.tracks ?? []).filter(t => t.noteCount > 0).length >= 2
-      const confidence = multiTrack ? 0.80 : 0.50
+      const { assign, confidence: handConfidence } = buildHandAssigner(midiState.tracks ?? [], midiState.events)
+      const confidence = handConfidence === "high" ? 0.80 : 0.50
       const events = midiState.events.map((e) => ({
         id: `m-${e.id}`,
         midi: e.midi,
         noteName: e.name,
         startTime: e.time,
         duration: e.duration,
-        hand: handAssigner(e),
+        hand: assign(e),
         velocity: e.velocity,
         source: { midiId: e.id, xmlId: undefined, confidence },
       }))
@@ -100,6 +113,7 @@ export function useHybridScore(opts: { midiUrl?: string | null; xmlUrl?: string 
         staff: x.staff,
         voice: x.voice,
         measure: x.measure,
+        fingering: x.fingering,
         source: { xmlId: x.id, confidence: 0.3 },
       }))
       setState({ status: "xml-only", events, duration: xmlState.duration, stats: { xmlCount: events.length } })

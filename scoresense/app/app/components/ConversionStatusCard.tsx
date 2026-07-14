@@ -3,7 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
-import { Check, Loader2, Circle } from "lucide-react"
+import { Check, Loader2, Circle, AlertTriangle } from "lucide-react"
 import type { ConversionStep } from "./types"
 
 interface ConversionStatusCardProps {
@@ -13,6 +13,8 @@ interface ConversionStatusCardProps {
   isConverting: boolean
   isComplete: boolean
   onCancel: () => void
+  /** Human-readable message when parsing failed. Shows a retry state instead of the step list. */
+  error?: string | null
 }
 
 export function ConversionStatusCard({
@@ -22,12 +24,15 @@ export function ConversionStatusCard({
   isConverting,
   isComplete,
   onCancel,
+  error,
 }: ConversionStatusCardProps) {
   return (
     <Card>
       <CardHeader className="pb-4">
         <CardTitle className="text-lg flex items-center gap-2">
-          {isComplete ? (
+          {error ? (
+            <AlertTriangle className="h-5 w-5 text-destructive" />
+          ) : isComplete ? (
             <Check className="h-5 w-5 text-green-500" />
           ) : (
             <Loader2
@@ -38,6 +43,19 @@ export function ConversionStatusCard({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {error ? (
+          <div className="flex items-start gap-2 p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
+            <AlertTriangle className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+            <div className="space-y-2 min-w-0">
+              <p className="text-sm text-destructive font-medium">Conversion failed</p>
+              <p className="text-xs text-muted-foreground wrap-break-word">{error}</p>
+              <Button variant="outline" size="sm" onClick={onCancel}>
+                Try another file
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
         <div className="space-y-3">
           {steps.map((step) => (
             <div key={step.id} className="flex items-center gap-3">
@@ -90,6 +108,8 @@ export function ConversionStatusCard({
               Tutorial ready
             </span>
           </div>
+        )}
+          </>
         )}
       </CardContent>
     </Card>

@@ -16,6 +16,21 @@ interface PianoKeyboardProps {
   onScrollChange?: (scrollLeft: number, viewportWidth: number) => void
   /** When true, hides the overlay Fit/Scroll/Zoom controls (they are in the sidebar instead) */
   hideOverlayControls?: boolean
+  /** Live input: fired on press/release of a key via mouse/touch, note name e.g. "C#4" */
+  onKeyPress?: (note: string, down: boolean) => void
+  /** Use the colorblind-safe orange/blue accent instead of the default pink/purple glow. */
+  colorblindMode?: boolean
+}
+
+// Tailwind's build-time scanner needs each class string to appear literally in
+// source, so these are two complete alternatives rather than an interpolated one.
+const WHITE_KEY_ACTIVE_GLOW = {
+  default: "bg-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_0_22px_rgba(236,72,153,0.45),0_0_50px_rgba(168,85,247,0.15)]",
+  colorblind: "bg-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_0_22px_rgba(230,159,0,0.45),0_0_50px_rgba(0,114,178,0.20)]",
+}
+const BLACK_KEY_ACTIVE_GLOW = {
+  default: "bg-accent shadow-[0_0_22px_rgba(236,72,153,0.50),0_10px_18px_rgba(0,0,0,0.70),inset_0_1px_0_rgba(255,255,255,0.22)]",
+  colorblind: "bg-accent shadow-[0_0_22px_rgba(230,159,0,0.50),0_10px_18px_rgba(0,0,0,0.70),inset_0_1px_0_rgba(255,255,255,0.22)]",
 }
 
 export function PianoKeyboard({
@@ -28,6 +43,8 @@ export function PianoKeyboard({
   onZoomChange,
   onScrollChange,
   hideOverlayControls = false,
+  onKeyPress,
+  colorblindMode = false,
 }: PianoKeyboardProps) {
   const [modeLocal, setModeLocal] = useState<"fit" | "scroll">(modeProp ?? "fit")
   const [zoomLocal, setZoomLocal] = useState<number>(zoomProp ?? 1.2)
@@ -143,6 +160,7 @@ export function PianoKeyboard({
                   key={key.note}
                   className={[
                     "relative h-full",
+                    onKeyPress ? "cursor-pointer" : "",
                     idx === whiteKeys.length - 1 ? "" : "border-r border-border/30",
                     // more “piano-like” shading
                     "bg-gradient-to-b from-foreground via-foreground/95 to-foreground/90",
@@ -153,13 +171,18 @@ export function PianoKeyboard({
                     "transition-all duration-200 ease-out will-change-transform",
                     // active = smooth glow that will fade via transition when deactivated
                     isActive
-                      ? "bg-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_0_22px_rgba(236,72,153,0.45),0_0_50px_rgba(168,85,247,0.15)]"
+                      ? (colorblindMode ? WHITE_KEY_ACTIVE_GLOW.colorblind : WHITE_KEY_ACTIVE_GLOW.default)
                       : "shadow-[inset_0_1px_0_rgba(255,255,255,0.10),inset_0_-2px_0_rgba(0,0,0,0.18)]",
                   ].join(" ")}
                   style={{
                     ...widthStyle,
+                    touchAction: "none",
                     transform: isActive ? "translateY(2px) scaleY(0.97)" : "translateY(0px) scaleY(1)",
                   }}
+                  onPointerDown={onKeyPress ? (e) => { e.preventDefault(); onKeyPress(key.note, true) } : undefined}
+                  onPointerUp={onKeyPress ? () => onKeyPress(key.note, false) : undefined}
+                  onPointerLeave={onKeyPress ? () => onKeyPress(key.note, false) : undefined}
+                  onPointerCancel={onKeyPress ? () => onKeyPress(key.note, false) : undefined}
                 >
                   {/* front lip */}
                   <div className={`absolute bottom-0 left-0 right-0 h-2 ${isActive ? "bg-background/22" : "bg-background/12"}`} />
@@ -228,20 +251,26 @@ export function PianoKeyboard({
                 <div
                   key={key.note}
                   className={[
-                    "absolute top-0 h-[62%] rounded-b-lg",
+                    "absolute top-0 h-[62%] rounded-b-lg pointer-events-auto",
+                    onKeyPress ? "cursor-pointer" : "",
                     // matte black with depth
                     "bg-gradient-to-b from-background via-background/92 to-background/85",
                     "shadow-[0_8px_14px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.08)]",
                     "transition-all duration-200 ease-out will-change-transform",
                     isActive
-                      ? "bg-accent shadow-[0_0_22px_rgba(236,72,153,0.50),0_10px_18px_rgba(0,0,0,0.70),inset_0_1px_0_rgba(255,255,255,0.22)]"
+                      ? (colorblindMode ? BLACK_KEY_ACTIVE_GLOW.colorblind : BLACK_KEY_ACTIVE_GLOW.default)
                       : "",
                   ].join(" ")}
                   style={{
                     left: mode === "scroll" ? `${left}px` : `${left}%`,
                     width: mode === "scroll" ? `${width}px` : `${width}%`,
+                    touchAction: "none",
                     transform: isActive ? "translateY(2px) scaleY(0.97)" : "translateY(0px) scaleY(1)",
                   }}
+                  onPointerDown={onKeyPress ? (e) => { e.preventDefault(); e.stopPropagation(); onKeyPress(key.note, true) } : undefined}
+                  onPointerUp={onKeyPress ? (e) => { e.stopPropagation(); onKeyPress(key.note, false) } : undefined}
+                  onPointerLeave={onKeyPress ? () => onKeyPress(key.note, false) : undefined}
+                  onPointerCancel={onKeyPress ? () => onKeyPress(key.note, false) : undefined}
                 >
                   {/* tiny top gloss strip */}
                   <div className="absolute left-1 right-1 top-1 h-1 rounded-full bg-white/10" />

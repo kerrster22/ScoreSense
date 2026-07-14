@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useRef } from "react"
 import type { Note, PianoKey, LoopRange } from "./types"
+import { detectChord } from "../lib/chordDetection"
 
 // =============================================================================
 // STATE SUMMARY: Visualiser Panel Optimized for 60FPS+
@@ -40,12 +41,6 @@ const VFX = {
   noteWidthScale: 1.8,
   noteWidthScaleFullscreen: 2.1,
 
-  // Note colors
-  rhColor: { r: 236, g: 72, b: 153 },
-  rhGlow: { r: 190, g: 80, b: 230 },
-  lhColor: { r: 99, g: 102, b: 241 },
-  lhGlow: { r: 130, g: 140, b: 248 },
-
   // Sustain column
   sustainColumnAlpha: 0.07,
   sustainColumnWidth: 1.6, // multiplier of note width
@@ -58,6 +53,22 @@ const VFX = {
     ppsMult: 0.8, // slower fall speed
   },
 } as const
+
+// Hand color palettes. Default is a pink/indigo pair; the colorblind-safe
+// alternative uses the Okabe-Ito orange/blue pair, which stays distinguishable
+// under the common red-green colorblindness types (protanopia/deuteranopia).
+const DEFAULT_PALETTE = {
+  rhColor: { r: 236, g: 72, b: 153 },
+  rhGlow: { r: 190, g: 80, b: 230 },
+  lhColor: { r: 99, g: 102, b: 241 },
+  lhGlow: { r: 130, g: 140, b: 248 },
+}
+const COLORBLIND_PALETTE = {
+  rhColor: { r: 230, g: 159, b: 0 },
+  rhGlow: { r: 255, g: 190, b: 80 },
+  lhColor: { r: 0, g: 114, b: 178 },
+  lhGlow: { r: 90, g: 170, b: 230 },
+}
 
 // =============================================================================
 // LAYOUT
@@ -295,6 +306,9 @@ interface VisualizerPanelProps {
   keyboardViewportWidth?: number
   showPerformanceOverlay?: boolean
   loopEndTimeSec?: number
+  colorblindMode?: boolean
+  /** Beta feature, off by default — draws the currently-sounding chord name near the hit line. */
+  showChordLabel?: boolean
 }
 
 // =============================================================================
@@ -307,6 +321,8 @@ export function VisualizerPanel({
   keyboardMode = "fit", keyboardZoom = 1,
   keyboardScrollLeft = 0, keyboardViewportWidth,
   showPerformanceOverlay = false, loopEndTimeSec,
+  colorblindMode = false,
+  showChordLabel = false,
 }: VisualizerPanelProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -320,6 +336,8 @@ export function VisualizerPanel({
   const scrollRef = useRef(keyboardScrollLeft); scrollRef.current = keyboardScrollLeft
   const vpWRef = useRef(keyboardViewportWidth); vpWRef.current = keyboardViewportWidth
   const loopEndRef = useRef<number | undefined>(loopEndTimeSec); loopEndRef.current = loopEndTimeSec
+  const palette = colorblindMode ? COLORBLIND_PALETTE : DEFAULT_PALETTE
+  const paletteRef = useRef(palette); paletteRef.current = palette
 
   // VFX pools
   const hitPool = useRef(makeHitPool(MAX_HIT_EFFECTS))
@@ -362,15 +380,15 @@ export function VisualizerPanel({
     return map
   }, [pianoKeys, keyboardMode, keyboardZoom])
 
-  // Init glow sprites + bg sprite (once)
+  // Init glow sprites + bg sprite (re-baked if the palette changes)
   useEffect(() => {
     const s = VFX.glowSpriteSize
     glowRef.current = {
-      rh: createGlowSprite(s, VFX.rhGlow.r, VFX.rhGlow.g, VFX.rhGlow.b),
-      lh: createGlowSprite(s, VFX.lhGlow.r, VFX.lhGlow.g, VFX.lhGlow.b),
+      rh: createGlowSprite(s, palette.rhGlow.r, palette.rhGlow.g, palette.rhGlow.b),
+      lh: createGlowSprite(s, palette.lhGlow.r, palette.lhGlow.g, palette.lhGlow.b),
     }
-    bgRef.current = document.createElement("canvas")
-  }, [])
+    bgRef.current = bgRef.current ?? document.createElement("canvas")
+  }, [palette])
 
   // HiDPI canvas sizing
   useEffect(() => {
@@ -469,7 +487,7 @@ export function VisualizerPanel({
           else { x = pos.left - curScroll; ww = pos.width }
           const yy = clamp(40 + n.startTime * 28, 10, h - 60)
           const hh = clamp(n.duration * 70, MIN_NOTE_PX, 120)
-          const c = n.hand === "right" ? VFX.rhColor : VFX.lhColor
+          const c = n.hand === "right" ? paletteRef.current.rhColor : paletteRef.current.lhColor
           ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.4)`
           roundRect(ctx, x, yy, ww, hh, ww * 0.22)
           ctx.fill()
@@ -500,6 +518,7 @@ export function VisualizerPanel({
 
       const currentHitSet = new Set<string>()
       const glowSprites = glowRef.current
+      const soundingMidis: number[] = []
 
       for (let i = startIdx; i < filteredNotes.length; i++) {
         const n = filteredNotes[i]
@@ -520,8 +539,8 @@ export function VisualizerPanel({
         const cornerR = ww * 0.22
 
         const isRight = n.hand === "right"
-        const color = isRight ? VFX.rhColor : VFX.lhColor
-        const glow = isRight ? VFX.rhGlow : VFX.lhGlow
+        const color = isRight ? paletteRef.current.rhColor : paletteRef.current.lhColor
+        const glow = isRight ? paletteRef.current.rhGlow : paletteRef.current.lhGlow
 
         // --- Organic proximity envelope (300ms ramp, easeOutExpo) ---
         const dist = curTime - n.startTime
@@ -535,6 +554,8 @@ export function VisualizerPanel({
 
         const velScale = n.velocity != null ? clamp(n.velocity, 0.3, 1.0) : 0.75
         const isHit = dist >= -HIT_EARLY && dist < HIT_LATE
+
+        if ((isSustained || isHit) && n.midi != null) soundingMidis.push(n.midi)
 
         // Spawn bloom + particles (once per note-on)
         if (isHit) {
@@ -629,10 +650,42 @@ export function VisualizerPanel({
           ctx.fillText(n.note, xC + ww / 2, y + noteH / 2)
           ctx.globalAlpha = 1
         }
+
+        // --- Fingering digit (only for notes with source MusicXML fingering data) ---
+        if (n.fingering && ww > 14 && noteH > 16) {
+          const fx = xC + ww - 3
+          const fy = y + 3
+          ctx.font = "700 9px ui-sans-serif,system-ui,-apple-system"
+          ctx.textBaseline = "top"
+          ctx.textAlign = "right"
+          ctx.fillStyle = "rgba(0,0,0,0.45)"
+          ctx.fillText(String(n.fingering), fx + 0.5, fy + 0.5)
+          ctx.fillStyle = "rgba(255,255,255,0.92)"
+          ctx.fillText(String(n.fingering), fx, fy)
+        }
         ctx.restore()
       }
 
       prevHits.current = currentHitSet
+
+      // =====================================================================
+      // Chord label — currently-sounding notes named as a chord, near the hit line
+      // =====================================================================
+      if (isComplete && showChordLabel) {
+        const detected = detectChord(soundingMidis)
+        if (detected) {
+          ctx.save()
+          ctx.font = "700 13px ui-sans-serif,system-ui,-apple-system"
+          ctx.textAlign = "center"
+          ctx.textBaseline = "alphabetic"
+          const labelY = hitLineY + (fs ? 34 : 22)
+          ctx.fillStyle = "rgba(0,0,0,0.5)"
+          ctx.fillText(detected.symbol, w / 2 + 0.5, labelY + 0.5)
+          ctx.fillStyle = "rgba(255,255,255,0.85)"
+          ctx.fillText(detected.symbol, w / 2, labelY)
+          ctx.restore()
+        }
+      }
 
       // =====================================================================
       // PASS 3: Bloom hit effects (easeOutExpo decay)
@@ -664,7 +717,7 @@ export function VisualizerPanel({
         const t = elapsed / p.lifetimeMs
         const fadeA = p.alpha * (1 - easeOutCubic(t))
         p.x += p.vx; p.y += p.vy; p.vy -= 0.012
-        const c = p.isRight ? VFX.rhGlow : VFX.lhGlow
+        const c = p.isRight ? paletteRef.current.rhGlow : paletteRef.current.lhGlow
         ctx.globalAlpha = fadeA
         ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},1)`
         ctx.beginPath()
@@ -715,7 +768,7 @@ export function VisualizerPanel({
 
     rafRef.current = requestAnimationFrame(draw)
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = null }
-  }, [isComplete, filteredNotes, keyPositions, keyboardMode, isFullscreen, showPerformanceOverlay])
+  }, [isComplete, filteredNotes, keyPositions, keyboardMode, isFullscreen, showPerformanceOverlay, showChordLabel])
 
   // =========================================================================
   // RENDER
@@ -724,6 +777,14 @@ export function VisualizerPanel({
     <div
       ref={containerRef}
       className="relative overflow-hidden"
+      role="img"
+      aria-label={
+        isComplete
+          ? `Falling-notes visualizer, ${
+              handSelection === "both" ? "both hands" : handSelection === "right" ? "right hand" : "left hand"
+            }, tempo ${tempo}%. Visual only — not readable by screen readers note-by-note.`
+          : "Falling-notes visualizer, no piece loaded yet"
+      }
       style={{
         backgroundColor: "#08080d",
         height: isFullscreen ? "calc(100vh - 110px)" : `${NORMAL_HEIGHT}px`,

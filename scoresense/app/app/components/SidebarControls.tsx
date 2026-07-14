@@ -12,7 +12,6 @@ import { Settings2, Eye } from "lucide-react"
 import type {
   LoopRange,
   LoopOption,
-  HandOption,
   NamedLoop,
   HandAudioMode,
   HandVisualMode,
@@ -30,33 +29,42 @@ interface SidebarControlsProps {
   onPlayPause: () => void
   onReset: () => void
   onMetronomeToggle: () => void
+  countInEnabled?: boolean
+  onCountInToggle?: () => void
+  beatPhase?: number
   onTempoChange: (value: number) => void
   onClearLoop: () => void
   onSeek: (seconds: number) => void
   onTestTone?: () => Promise<void>
   // Practice
   loopSelection: string
-  handSelection: string
   loopOptions: LoopOption[]
-  handOptions: HandOption[]
   onLoopChange: (value: string) => void
-  onHandChange: (value: string) => void
   totalBars: number
   onSetBarLoop: (startBar: number, endBar: number) => void
   onLoopCurrentBar?: () => void
   namedLoops: NamedLoop[]
   onSaveLoop: (name: string) => void
   onDeleteLoop: (loopId: string) => void
+  loopRepeatTarget?: number | null
+  onLoopRepeatTargetChange?: (target: number | null) => void
+  tempoRampActive?: boolean
+  onTempoRampToggle?: () => void
   onSelectNamedLoop: (loop: NamedLoop) => void
   handAudioMode: HandAudioMode
   handVisualMode: HandVisualMode
   onHandAudioModeChange: (mode: HandAudioMode) => void
   onHandVisualModeChange: (mode: HandVisualMode) => void
+  // Volume
+  volume: number
+  onVolumeChange: (value: number) => void
   // Visual aids
   showNoteNames: boolean
   showKeyLabels: boolean
   onShowNoteNamesChange: (value: boolean) => void
   onShowKeyLabelsChange: (value: boolean) => void
+  colorblindMode?: boolean
+  onColorblindModeChange?: (value: boolean) => void
   currentBar?: number
 }
 
@@ -71,16 +79,16 @@ export function SidebarControls({
   onPlayPause,
   onReset,
   onMetronomeToggle,
+  countInEnabled,
+  onCountInToggle,
+  beatPhase,
   onTempoChange,
   onClearLoop,
   onSeek,
   onTestTone,
   loopSelection,
-  handSelection,
   loopOptions,
-  handOptions,
   onLoopChange,
-  onHandChange,
   totalBars,
   onSetBarLoop,
   onLoopCurrentBar,
@@ -88,17 +96,24 @@ export function SidebarControls({
   onSaveLoop,
   onDeleteLoop,
   onSelectNamedLoop,
+  loopRepeatTarget,
+  onLoopRepeatTargetChange,
+  tempoRampActive,
+  onTempoRampToggle,
   handAudioMode,
   handVisualMode,
   onHandAudioModeChange,
   onHandVisualModeChange,
+  volume,
+  onVolumeChange,
   showNoteNames,
   showKeyLabels,
   onShowNoteNamesChange,
   onShowKeyLabelsChange,
+  colorblindMode,
+  onColorblindModeChange,
   currentBar,
 }: SidebarControlsProps) {
-  const [volume, setVolume] = useState<number>(0.7)
   const [showDisplay, setShowDisplay] = useState(false)
 
   return (
@@ -110,6 +125,9 @@ export function SidebarControls({
             isComplete={isComplete}
             metronomeOn={metronomeOn}
             onMetronomeToggle={onMetronomeToggle}
+            countInEnabled={countInEnabled}
+            onCountInToggle={onCountInToggle}
+            beatPhase={beatPhase}
           />
         </CardContent>
       </Card>
@@ -126,11 +144,8 @@ export function SidebarControls({
           <PracticeControls
             isComplete={isComplete}
             loopSelection={loopSelection}
-            handSelection={handSelection}
             loopOptions={loopOptions}
-            handOptions={handOptions}
             onLoopChange={onLoopChange}
-            onHandChange={onHandChange}
             totalBars={totalBars}
             onSetBarLoop={onSetBarLoop}
             onLoopCurrentBar={onLoopCurrentBar}
@@ -139,6 +154,10 @@ export function SidebarControls({
             onSaveLoop={onSaveLoop}
             onDeleteLoop={onDeleteLoop}
             onSelectNamedLoop={onSelectNamedLoop}
+            loopRepeatTarget={loopRepeatTarget}
+            onLoopRepeatTargetChange={onLoopRepeatTargetChange}
+            tempoRampActive={tempoRampActive}
+            onTempoRampToggle={onTempoRampToggle}
             handAudioMode={handAudioMode}
             handVisualMode={handVisualMode}
             onHandAudioModeChange={onHandAudioModeChange}
@@ -150,6 +169,7 @@ export function SidebarControls({
             type="button"
             onClick={() => setShowDisplay((v) => !v)}
             className="w-full flex items-center justify-between text-xs text-muted-foreground hover:text-foreground transition-colors"
+            aria-expanded={showDisplay}
           >
             <span className="flex items-center gap-1.5">
               <Eye className="h-3.5 w-3.5" />
@@ -164,12 +184,14 @@ export function SidebarControls({
                 showKeyLabels={showKeyLabels}
                 onShowNoteNamesChange={onShowNoteNamesChange}
                 onShowKeyLabelsChange={onShowKeyLabelsChange}
+                colorblindMode={colorblindMode}
+                onColorblindModeChange={onColorblindModeChange}
               />
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Volume</span>
                 <AudioControls
                   volume={volume}
-                  onVolumeChange={setVolume}
+                  onVolumeChange={onVolumeChange}
                   disabled={!isComplete}
                 />
               </div>

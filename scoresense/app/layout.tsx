@@ -2,14 +2,15 @@ import React from "react"
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
+import { Toaster } from 'sonner'
 import './globals.css'
 
 const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'ScoreSense - Turn Sheet Music into Piano Tutorials',
-  description: 'Upload a PDF or image. We convert it to MIDI and generate practice loops, hand separation, and repeat-aware guidance.',
+  title: 'ScoreSense - Interactive MIDI & MusicXML Piano Practice',
+  description: 'Upload a MIDI or MusicXML file and get an interactive piano practice tutorial: tempo control, hand separation, loop practice, repeat-aware guidance, and play-along scoring.',
   generator: 'v0.app',
   icons: {
     icon: [
@@ -40,6 +41,7 @@ export default function RootLayout({
       <body className={`font-sans antialiased`}>
         {children}
         <Analytics />
+        <Toaster richColors position="bottom-right" />
       </body>
     </html>
   )

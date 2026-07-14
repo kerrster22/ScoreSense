@@ -8,7 +8,8 @@ export async function GET() {
     const piecesPath = path.join(process.cwd(), "app", "Pieces")
     const filePaths = scanPiecesDirectory(piecesPath)
     const library = buildPieceLibrary(filePaths)
-    return NextResponse.json({ library, count: filePaths.length })
+    const count = library.reduce((sum, group) => sum + group.pieces.length, 0)
+    return NextResponse.json({ library, count })
   } catch (err) {
     return NextResponse.json({ error: "Failed to scan pieces", details: err instanceof Error ? err.message : String(err) }, { status: 500 })
   }

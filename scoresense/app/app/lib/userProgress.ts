@@ -69,7 +69,8 @@ export function loadProgress(): UserProgress {
   try {
     const raw = localStorage.getItem(PROGRESS_KEY)
     if (!raw) return defaultProgress()
-    return JSON.parse(raw) as UserProgress
+    const parsed = JSON.parse(raw) as Partial<UserProgress>
+    return { ...defaultProgress(), ...parsed, unlockedAchievements: Array.isArray(parsed.unlockedAchievements) ? parsed.unlockedAchievements : [] }
   } catch {
     return defaultProgress()
   }

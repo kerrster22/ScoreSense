@@ -2,7 +2,7 @@ import type { PianoKey } from "../components/types"
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
-function midiToNoteName(midi: number) {
+export function midiToNoteName(midi: number) {
   const name = NOTE_NAMES[midi % 12]
   const octave = Math.floor(midi / 12) - 1
   return `${name}${octave}`
@@ -10,6 +10,17 @@ function midiToNoteName(midi: number) {
 
 function isBlackKey(noteName: string) {
   return noteName.includes("#")
+}
+
+/** Inverse of the note-name formula above: "C#4" -> 61. Returns null if unparseable. */
+export function noteNameToMidi(noteName: string): number | null {
+  const match = /^([A-G]#?)(-?\d+)$/.exec(noteName)
+  if (!match) return null
+  const [, name, octaveStr] = match
+  const idx = NOTE_NAMES.indexOf(name)
+  if (idx === -1) return null
+  const octave = parseInt(octaveStr, 10)
+  return idx + (octave + 1) * 12
 }
 
 /**

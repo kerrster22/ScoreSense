@@ -272,7 +272,9 @@ function getTieTypesFromNoteChildren(noteChildren: any[]): { start: boolean; sto
 
 /**
  * Merge tied segments into a single long note.
- * Key by staff+midi (works well for piano).
+ * Key by part+staff+voice+midi so ties are only merged within the same
+ * voice — otherwise two different voices hitting the same pitch on the
+ * same staff at the same time can cross-merge onto each other's ties.
  */
 function mergeTies(
   events: (MusicXmlNoteEvent & { _tie?: { start: boolean; stop: boolean } })[]
@@ -282,7 +284,7 @@ function mergeTies(
 
   for (const e of events) {
     const tie = e._tie
-    const key = `${e.staff}:${e.midi}`
+    const key = `${e.partId ?? ""}:${e.staff}:${e.voice ?? ""}:${e.midi}`
 
     if (tie?.start && !tie?.stop) {
       open.set(key, { ...e })
@@ -348,6 +350,8 @@ type GraceBuffer = {
   hand: "left" | "right"
   staff: number
   measure: number
+  voice?: string | number
+  partId?: string
   dynamic?: string
   fingering?: number
   graceType: GraceType
@@ -387,6 +391,8 @@ function flushGraceBuffer(
       hand: g.hand,
       staff: g.staff,
       measure: g.measure,
+      voice: g.voice,
+      partId: g.partId,
       dynamic: g.dynamic,
       fingering: g.fingering,
       isGrace: true,
@@ -709,6 +715,8 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number): MusicXml
   let firstPartDone = false
 
   for (const partNode of partNodes) {
+    const partAttrs = getAttrs(partNode)
+    const partId = String(partAttrs.id ?? "P1")
     const partChildren = asArray(partNode["part"]) as any[]
     const measures = findAll(partChildren, "measure")
 
@@ -813,6 +821,7 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number): MusicXml
 
                 const staffText = childText(noteChildren, "staff")
                 const staff = safeNum(staffText, 1)
+                const voiceText = childText(noteChildren, "voice")
 
                 // Check for slash attribute → acciaccatura
                 const graceNode = findFirst(noteChildren, "grace")
@@ -841,6 +850,8 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number): MusicXml
                   hand: staffToHand(staff),
                   staff,
                   measure: mi + 1,
+                  voice: voiceText ?? undefined,
+                  partId,
                   dynamic: currentDynamic,
                   fingering,
                   graceType,
@@ -888,6 +899,7 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number): MusicXml
           const staffText = childText(noteChildren, "staff")
           const staff = safeNum(staffText, 1)
           const hand = staffToHand(staff)
+          const voiceText = childText(noteChildren, "voice")
 
           const tie = getTieTypesFromNoteChildren(noteChildren)
           if (tie.start || tie.stop) stats.addTie()
@@ -929,6 +941,8 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number): MusicXml
             hand,
             staff,
             measure: mi + 1,
+            voice: voiceText ?? undefined,
+            partId,
             dynamic: currentDynamic,
             fingering,
             ornament,
@@ -973,7 +987,6 @@ function parseScorePartwise(scoreChildren: any[], fallbackBpm: number): MusicXml
   // Finalize stats
   const finalStats = stats.getStats()
   finalStats.totalDuration = duration
-  finalStats.tempoChanges = detectedBpm ? 1 : 0
 
   return { events: expanded, duration, measureMap, detectedBpm, timeSignature, stats: finalStats }
 }
@@ -1058,6 +1071,7 @@ function parseScoreTimewise(scoreChildren: any[], fallbackBpm: number): MusicXml
                 const midi = pitchToMidi(step, alter, octave)
                 const staffText = childText(noteChildren, "staff")
                 const staff = safeNum(staffText, 1)
+                const voiceText = childText(noteChildren, "voice")
                 const graceNode = findFirst(noteChildren, "grace")
                 const graceAttrs = graceNode ? getAttrs(graceNode) : {}
                 const graceType: GraceType = graceAttrs.slash === "yes" ? "acciaccatura" : "appoggiatura"
@@ -1068,6 +1082,8 @@ function parseScoreTimewise(scoreChildren: any[], fallbackBpm: number): MusicXml
                   hand: staffToHand(staff),
                   staff,
                   measure: mi + 1,
+                  voice: voiceText ?? undefined,
+                  partId,
                   graceType,
                 })
               }
@@ -1112,6 +1128,7 @@ function parseScoreTimewise(scoreChildren: any[], fallbackBpm: number): MusicXml
           const staffText = childText(noteChildren, "staff")
           const staff = safeNum(staffText, 1)
           const hand = staffToHand(staff)
+          const voiceText = childText(noteChildren, "voice")
 
           const tie = getTieTypesFromNoteChildren(noteChildren)
           if (tie.start || tie.stop) stats.addTie()
@@ -1137,6 +1154,8 @@ function parseScoreTimewise(scoreChildren: any[], fallbackBpm: number): MusicXml
             hand,
             staff,
             measure: mi + 1,
+            voice: voiceText ?? undefined,
+            partId,
             ornament,
             _tie: tie,
           })

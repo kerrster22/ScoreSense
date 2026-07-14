@@ -9,12 +9,13 @@
 
 import type { Segment, Lesson, PatternInsight } from "../components/types"
 import type { MeasureMapEntry, MusicXmlNoteEvent } from "./musicmxl"
+import { detectChord } from "./chordDetection"
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-export const ALGO_VERSION = "1.1"
+export const ALGO_VERSION = "1.2"
 const MIN_SECTION_BARS = 2
 const MAX_SECTION_BARS = 16
 const DEFAULT_SECTION_BARS = 8
@@ -323,6 +324,28 @@ function findSimilarSections(
 }
 
 // ---------------------------------------------------------------------------
+// Harmony: one chord symbol per bar, from the combined (both-hands) contour
+// ---------------------------------------------------------------------------
+
+/** Per-bar chord symbols for [startBar, endBar], reusing the same detector the
+ * falling-notes visualizer uses live — one source of truth for "what chord is
+ * this" everywhere in the app. Bars with no clean 3+ note match are omitted. */
+function chordProgressionForBars(
+  features: BarFeature[],
+  startBar: number,
+  endBar: number
+): string[] {
+  const progression: string[] = []
+  for (let bar = startBar; bar <= endBar; bar++) {
+    const feature = features.find((f) => f.measure === bar)
+    if (!feature) continue
+    const detected = detectChord(feature.contour)
+    if (detected) progression.push(detected.symbol)
+  }
+  return progression
+}
+
+// ---------------------------------------------------------------------------
 // Segment & lesson generation
 // ---------------------------------------------------------------------------
 
@@ -384,7 +407,8 @@ function generateLessons(segments: Segment[]): Lesson[] {
 function generateInsights(
   segments: Segment[],
   matches: SimilarityMatch[],
-  lhFeatures: BarFeature[]
+  lhFeatures: BarFeature[],
+  combinedFeatures: BarFeature[]
 ): PatternInsight[] {
   const insights: PatternInsight[] = []
   let id = 1
@@ -430,6 +454,7 @@ function generateInsights(
       loopEnd:   sA.endSec,
       occurrences: [`${sB.startBar}–${sB.endBar}`],
       score: match.score,
+      chordProgression: chordProgressionForBars(combinedFeatures, sA.startBar, sA.endBar),
     })
   }
 
@@ -474,6 +499,7 @@ function generateInsights(
       loopStart: seg.startSec,
       loopEnd:   seg.endSec,
       score: avgRhythmSim,
+      chordProgression: chordProgressionForBars(combinedFeatures, seg.startBar, seg.endBar),
     })
   }
 
@@ -548,7 +574,7 @@ function _analyze(
   const deduped = Array.from(bestMatches.values())
   const segments = generateSegments(sections, deduped)
   const lessons  = generateLessons(segments)
-  const insights = generateInsights(segments, deduped, lhFeatures)
+  const insights = generateInsights(segments, deduped, lhFeatures, combinedFeatures)
 
   return { segments, lessons, insights, algoVersion: ALGO_VERSION }
 }

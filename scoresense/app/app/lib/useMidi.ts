@@ -13,7 +13,10 @@ export function useMidi(url: string | null) {
   const [state, setState] = useState<MidiLoadState>({ status: "idle" })
 
   useEffect(() => {
-    if (!url) return
+    if (!url) {
+      setState({ status: "idle" })
+      return
+    }
     let cancelled = false
 
     ;(async () => {

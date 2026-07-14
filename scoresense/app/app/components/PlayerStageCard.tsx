@@ -16,11 +16,14 @@ interface PlayerStageCardProps {
   handVisualMode?: "both" | "right-only" | "left-only"
   showNoteNames: boolean
   showKeyLabels: boolean
+  colorblindMode?: boolean
   currentLoop: LoopRange | null
   tempo: number
   activeKeys: string[]
   currentLessonTitle?: string | null
   loopEndTimeSec?: number
+  onKeyPress?: (note: string, down: boolean) => void
+  showChordLabel?: boolean
 }
 
 export function PlayerStageCard({
@@ -32,11 +35,14 @@ export function PlayerStageCard({
   handVisualMode,
   showNoteNames,
   showKeyLabels,
+  colorblindMode = false,
   currentLoop,
   tempo,
   activeKeys,
   currentLessonTitle,
   loopEndTimeSec,
+  onKeyPress,
+  showChordLabel = false,
 }: PlayerStageCardProps) {
   const [keyboardMode, setKeyboardMode] = useState<"fit" | "scroll">("fit")
   const [keyboardZoom, setKeyboardZoom] = useState<number>(1.2)
@@ -109,6 +115,8 @@ export function PlayerStageCard({
               keyboardScrollLeft={keyboardScrollLeft}
               keyboardViewportWidth={keyboardViewportWidth}
               loopEndTimeSec={loopEndTimeSec}
+              colorblindMode={colorblindMode}
+              showChordLabel={showChordLabel}
             />
           </div>
 
@@ -121,7 +129,9 @@ export function PlayerStageCard({
             onModeChange={setKeyboardMode}
             onZoomChange={setKeyboardZoom}
             onScrollChange={handleKeyboardScrollChange}
+            onKeyPress={onKeyPress}
             hideOverlayControls
+            colorblindMode={colorblindMode}
           />
         </CardContent>
       </Card>

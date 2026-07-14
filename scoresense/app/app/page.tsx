@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import * as Tone from "tone"
+import { toast } from "sonner"
 
 // Components
 import { AppTopNav } from "./components/AppTopNav"
@@ -10,18 +11,38 @@ import { ConversionStatusCard } from "./components/ConversionStatusCard"
 import { PlayerStageCard } from "./components/PlayerStageCard"
 import { PieceTimeline } from "./components/PieceTimeline"
 import { SidebarControls } from "./components/SidebarControls"
+import { PedalIndicator } from "./components/PedalIndicator"
+import { ScoringHUD } from "./components/ScoringHUD"
 import { TutorialPlayerCard } from "./components/TutorialPlayerCard"
 import { InsightsTab } from "./components/InsightsTab"
+import { ChordEncyclopedia } from "./components/ChordEncyclopedia"
+import { ChordTrainingSession } from "./components/ChordTrainingSession"
+import { WarmupTab } from "./components/WarmupTab"
+import { detectChord } from "./lib/chordDetection"
+import { findChordDefinitionBySymbol } from "./lib/chordLibrary"
+import { recordChordSeenInPieces } from "./lib/chordMastery"
+import { recordCoachWeaknessTags } from "./lib/coachProfile"
+import { getRecommendations } from "./lib/practiceCoach"
+import { loadAppSettings, saveAppSettings } from "./lib/appSettings"
+import { SettingsTab } from "./components/SettingsTab"
+import { exerciseToMidiBlobUrl } from "./lib/exerciseMidi"
+import type { ExerciseDefinition } from "@/types/exercises"
+import { useMicInput } from "./hooks/useMicInput"
+import { MicInputPanel } from "./components/MicInputPanel"
+import { SessionSummaryModal } from "./components/SessionSummaryModal"
+import { NotationView } from "./components/NotationView"
 
 // UI
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
 
 // Piece library feature
 import { PieceLibrary } from "@/components/PieceLibrary"
 import { buildPieceLibrary, MOCK_PIECE_FILE_PATHS } from "@/lib/buildPieceLibrary"
 import type { ComposerGroup, PieceFile } from "@/types/pieces"
+import { saveUpload, listUploads, getUploadBlob, type UploadRecord } from "./lib/uploadStore"
 
 // Tutorial segment feature
 import { TutorialPanel } from "@/components/TutorialPanel"
@@ -46,21 +67,32 @@ import {
   loadCompletedSegments,
   recordPiecePathHash,
   getPieceProgressByPath,
+  getCachedDifficulty,
+  cacheDifficulty,
+  recordSessionMinutes,
+  getPracticeHistory,
 } from "./lib/persistence"
+import { computeDifficulty } from "./lib/difficulty"
 
 // Icons
 import {
   Music,
+  Music2,
+  Dumbbell,
+  Settings as SettingsIcon,
   Play,
   Pause,
   RotateCcw,
   Lightbulb,
+  FileText,
   Upload,
   Timer,
   Clock,
   Hand,
   Repeat,
   X as XIcon,
+  SkipBack,
+  SkipForward,
 } from "lucide-react"
 
 // Types
@@ -70,7 +102,6 @@ import type {
   PianoKey,
   ConversionStep,
   LoopOption,
-  HandOption,
   PatternInsight,
   LoopRange,
   NamedLoop,
@@ -81,10 +112,12 @@ import type {
 
 // Hooks / utils
 import { useMidi } from "./lib/useMidi"
-import { generateFullPianoKeys } from "./lib/piano"
+import { generateFullPianoKeys, noteNameToMidi } from "./lib/piano"
 import { useMusicXml } from "./hooks/useMusicXml"
 import { useHybridScore } from "./hooks/useHybridScore"
 import { getPianoAudioEngine } from "./lib/pianoAudioEngine"
+import { ScoringEngine, type Verdict, type SessionSummary, type ScoringWindows } from "./lib/scoringEngine"
+import type { UnifiedNoteEvent } from "./lib/hybrid/types"
 import { analyzePiece, analyzeFromNotes, ALGO_VERSION } from "./lib/practiceAnalysis"
 import {
   computePieceHash,
@@ -94,6 +127,9 @@ import {
   saveLastPosition,
   getCachedAnalysis,
   cacheAnalysis,
+  recordBarMiss,
+  recordPieceWeaknessTags,
+  getBarMissCounts,
 } from "./lib/persistence"
 import { filterNotesByVisualHand, filterNotesByAudioHand, computeActiveKeys } from "./lib/handFilter"
 
@@ -103,6 +139,8 @@ import { filterNotesByVisualHand, filterNotesByAudioHand, computeActiveKeys } fr
 
 const PRACTICE_PREROLL_SEC  = 2.0  // how many seconds of "run-up" before the first note
 const PRACTICE_POSTROLL_SEC = 2.0  // how many seconds to linger after the last note
+const QUICK_LOOP_SEC = 5.0  // length of the one-click "Quick Loop" window
+const TEMPO_RAMP_STEP = 5   // tempo % added each successful loop pass in ramp mode
 
 // ============================================================================
 // Constants / Mock Data
@@ -143,11 +181,36 @@ const LOOP_OPTIONS: LoopOption[] = [
   { value: "4", label: "4 bars" },
 ]
 
-const HAND_OPTIONS: HandOption[] = [
-  { value: "both", label: "Both" },
-  { value: "right", label: "Right" },
-  { value: "left", label: "Left" },
-]
+// Computer-keyboard-as-piano mapping (one octave, C4-C5). Deliberately avoids
+// Space/L/ArrowLeft/ArrowRight/?/Escape, which are already bound to transport
+// shortcuts above. Home row = white keys, row above = black keys, in the same
+// left-to-right pitch order as a real keyboard.
+const QWERTY_NOTE_MAP: Record<string, string> = {
+  a: "C4", w: "C#4", s: "D4", e: "D#4", d: "E4",
+  f: "F4", t: "F#4", g: "G4", y: "G#4", h: "A4",
+  u: "A#4", j: "B4", k: "C5",
+}
+
+// Classifies a missed note into a coarse "why" tag for the Adaptive Practice
+// Coach — explicit, tunable thresholds rather than a black-box model.
+const LEAP_SEMITONES_THRESHOLD = 7 // a fifth or more from the previous same-hand note
+const FAST_PASSAGE_GAP_SEC = 0.2 // less than this between same-hand notes counts as "fast"
+
+// Microphone pitch detection is inherently less precise than a keypress —
+// wider timing tolerance and a bit of grace absorb tuning drift and the
+// extra latency of the onset detector in useMicInput.ts.
+const MIC_SCORING_WINDOWS: Partial<ScoringWindows> = { perfectMs: 70, greatMs: 120, goodMs: 220, missMs: 500 }
+
+function classifyMissTag(ref: UnifiedNoteEvent, prev: UnifiedNoteEvent | null): string {
+  if (!prev) return "timing-drift"
+  const leap = Math.abs(ref.midi - prev.midi)
+  const gapSec = ref.startTime - prev.startTime
+  if (leap >= LEAP_SEMITONES_THRESHOLD) {
+    return ref.hand === "left" ? "left-hand-leap" : "right-hand-leap"
+  }
+  if (gapSec < FAST_PASSAGE_GAP_SEC) return "fast-passage"
+  return "timing-drift"
+}
 
 
 // ============================================================================
@@ -183,15 +246,31 @@ export default function AppPage() {
 
   // ---------- Player state ----------
   const [isPlaying, setIsPlaying] = useState(false)
+  const isPlayingRef = useRef(false)
+  isPlayingRef.current = isPlaying
   const [tempo, setTempo] = useState(100)
   const [metronomeOn, setMetronomeOn] = useState(false)
+  const [countInEnabled, setCountInEnabled] = useState(false)
   const [loopSelection, setLoopSelection] = useState("off")
-  const [handSelection, setHandSelection] = useState("both")
+  const [volume, setVolume] = useState(0.7)
   const [currentLoop, setCurrentLoop] = useState<LoopRange | null>(null)
+  const [pedalActive, setPedalActive] = useState(false)
+  const [beatPhase, setBeatPhase] = useState(0)
+  const [quickLoopActive, setQuickLoopActive] = useState(false)
+  const [drillActive, setDrillActive] = useState(false)
+  const [loopRepeatTarget, setLoopRepeatTarget] = useState<number | null>(null)
+  const loopRepeatTargetRef = useRef<number | null>(null)
+  loopRepeatTargetRef.current = loopRepeatTarget
+  const [tempoRampActive, setTempoRampActive] = useState(false)
+  const tempoRampActiveRef = useRef(false)
+  tempoRampActiveRef.current = tempoRampActive
+  const tempoRef = useRef(100)
+  tempoRef.current = tempo
 
   // ---------- Visual aids ----------
   const [showNoteNames, setShowNoteNames] = useState(true)
   const [showKeyLabels, setShowKeyLabels] = useState(false)
+  const [colorblindMode, setColorblindMode] = useState(false)
 
   // ---------- Hand modes ----------
   const [handAudioMode, setHandAudioMode] = useState<HandAudioMode>("both")
@@ -209,8 +288,58 @@ export default function AppPage() {
   const [playbackTime, setPlaybackTime] = useState(0)
   const animationRef = useRef<number>(null)
 
+  // Local scrub preview for the seek bar — while non-null, the slider shows
+  // this instead of the live (rAF-driven) playbackTime, so dragging doesn't
+  // fight with playback advancing underneath it. Cleared once the drag/key
+  // nudge commits and the actual engine.seek() has been issued.
+  const [scrubSeconds, setScrubSeconds] = useState<number | null>(null)
+
   // ---------- Audio engine ----------
   const audioEngineRef = useRef(getPianoAudioEngine())
+
+  // ---------- Live input + scoring (clickable keyboard / computer keys) ----------
+  const scoringEngineRef = useRef<ScoringEngine | null>(null)
+  const referenceNotesByIdRef = useRef<Map<string, UnifiedNoteEvent>>(new Map())
+  // The note immediately before each note in the same hand — used to classify
+  // misses (a big pitch gap from the previous same-hand note = a "leap").
+  const previousNoteByHandRef = useRef<Map<string, UnifiedNoteEvent | null>>(new Map())
+  const pieceHashRef = useRef<string | null>(null)
+  pieceHashRef.current = pieceHash
+  const measureMapRef = useRef<{ measure: number; startSec: number; endSec: number }[]>([])
+  const playbackTimeRef = useRef(0)
+  playbackTimeRef.current = playbackTime
+  const [manualActiveKeys, setManualActiveKeys] = useState<Set<string>>(new Set())
+  const [inputMode, setInputMode] = useState<"keyboard" | "microphone">("keyboard")
+  // Play-along input/scoring and live chord labels are both beta features,
+  // off by default — persisted across sessions.
+  const [playAlongEnabled, setPlayAlongEnabled] = useState(false)
+  const playAlongEnabledRef = useRef(false)
+  playAlongEnabledRef.current = playAlongEnabled
+  const [liveChordDisplayEnabled, setLiveChordDisplayEnabled] = useState(false)
+  useEffect(() => {
+    const settings = loadAppSettings()
+    setPlayAlongEnabled(settings.playAlongEnabled)
+    setLiveChordDisplayEnabled(settings.liveChordDisplayEnabled)
+  }, [])
+  const handlePlayAlongEnabledChange = useCallback((enabled: boolean) => {
+    setPlayAlongEnabled(enabled)
+    saveAppSettings({ ...loadAppSettings(), playAlongEnabled: enabled })
+  }, [])
+  const handleLiveChordDisplayEnabledChange = useCallback((enabled: boolean) => {
+    setLiveChordDisplayEnabled(enabled)
+    saveAppSettings({ ...loadAppSettings(), liveChordDisplayEnabled: enabled })
+  }, [])
+  const [comboCount, setComboCount] = useState(0)
+  const [lastVerdict, setLastVerdict] = useState<Verdict | null>(null)
+  const [lastHitNoteName, setLastHitNoteName] = useState<string | null>(null)
+  const [verdictFlashToken, setVerdictFlashToken] = useState(0)
+  const [waitForNoteEnabled, setWaitForNoteEnabled] = useState(true)
+  const waitForNoteRef = useRef(waitForNoteEnabled)
+  waitForNoteRef.current = waitForNoteEnabled
+  const [isWaitingForNote, setIsWaitingForNote] = useState(false)
+  const isWaitingForNoteRef = useRef(false)
+  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null)
+  const [weakSpotVersion, setWeakSpotVersion] = useState(0)
 
   // Tracks whether markComplete has already fired for the current segment playthrough.
   // Reset whenever a new segment starts or the section loops back.
@@ -236,6 +365,7 @@ export default function AppPage() {
 
   // ---------- Session timer ----------
   const [sessionMinutes, setSessionMinutes] = useState(0)
+  const [historyVersion, setHistoryVersion] = useState(0)
   const sessionStartRef = useRef<number>(Date.now())
   useEffect(() => {
     const today = new Date().toDateString()
@@ -248,17 +378,34 @@ export default function AppPage() {
       const total = base + elapsed
       setSessionMinutes(total)
       localStorage.setItem("ss_session_mins", JSON.stringify({ date: new Date().toDateString(), mins: total }))
+      // Attribute active practice time to whichever piece is currently loaded,
+      // so the per-piece practice-history dashboard has real data to show.
+      if (isPlayingRef.current && pieceHashRef.current) {
+        recordSessionMinutes(pieceHashRef.current, 0.5)
+        setHistoryVersion((v) => v + 1)
+      }
     }, 30000) // update every 30 s
     return () => clearInterval(interval)
   }, [])
 
   // ---------- Engagement / gamification ----------
-  const [progress, setProgress] = useState<UserProgress>(() => {
-    if (typeof window === "undefined") return { totalXp: 0, streak: 0, lastPracticeDate: "", unlockedAchievements: [] }
-    return loadProgress()
+  // Starts at the same neutral default on both server and client — reading
+  // localStorage here would make the client's first render (which has real
+  // saved progress) diverge from the server-rendered HTML (which never has
+  // access to localStorage) and fail hydration. The real value is loaded in
+  // an effect below, which only runs after hydration on the client.
+  const [progress, setProgress] = useState<UserProgress>({
+    totalXp: 0,
+    streak: 0,
+    lastPracticeDate: "",
+    unlockedAchievements: [],
   })
   const [achievementQueue, setAchievementQueue] = useState<Achievement[]>([])
   const hasRecordedSessionRef = useRef(false)
+
+  useEffect(() => {
+    setProgress(loadProgress())
+  }, [])
 
   const pushAchievements = useCallback((achievements: Achievement[]) => {
     if (achievements.length > 0) setAchievementQueue((prev) => [...prev, ...achievements])
@@ -271,9 +418,47 @@ export default function AppPage() {
   // ---------- Piece library ----------
   const [pieceLibrary, setPieceLibrary] = useState<ComposerGroup[]>([])
   const [selectedPiece, setSelectedPiece] = useState<PieceFile | null>(null)
-  const [pieceProgress, setPieceProgress] = useState<Record<string, { completed: number; total: number }>>(() => {
-    if (typeof window === "undefined") return {}
-    // Pre-populate from known saved paths on first render
+  const [myUploads, setMyUploads] = useState<UploadRecord[]>([])
+  const [activeExercise, setActiveExercise] = useState<ExerciseDefinition | null>(null)
+  const [chordTraining, setChordTraining] = useState<{ focusChordId: string | null } | null>(null)
+
+  const refreshMyUploads = useCallback(() => {
+    listUploads().then(setMyUploads).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    refreshMyUploads()
+  }, [refreshMyUploads])
+
+  // Merge the local "My Uploads" IndexedDB library in as its own composer group.
+  const combinedPieceLibrary: ComposerGroup[] = useMemo(() => {
+    if (myUploads.length === 0) return pieceLibrary
+    const uploadGroup: ComposerGroup = {
+      composer: "My Uploads",
+      pieces: myUploads.map((u) => {
+        const dot = u.name.lastIndexOf(".")
+        const extension = dot >= 0 ? u.name.slice(dot).toLowerCase() : ""
+        const title = dot >= 0 ? u.name.slice(0, dot) : u.name
+        const isMidi = extension === ".mid" || extension === ".midi"
+        return {
+          composer: "My Uploads",
+          title,
+          fileName: u.name,
+          filePath: `upload:${u.id}`,
+          extension,
+          midiPath: isMidi ? `upload:${u.id}` : undefined,
+          xmlPath: !isMidi ? `upload:${u.id}` : undefined,
+          uploadId: u.id,
+        } satisfies PieceFile
+      }),
+    }
+    return [uploadGroup, ...pieceLibrary]
+  }, [pieceLibrary, myUploads])
+  // Starts empty on both server and client for the same hydration-safety
+  // reason as `progress` above — populated from localStorage in an effect.
+  const [pieceProgress, setPieceProgress] = useState<Record<string, { completed: number; total: number }>>({})
+
+  useEffect(() => {
     const out: Record<string, { completed: number; total: number }> = {}
     try {
       const raw = localStorage.getItem("ss_path_to_hash")
@@ -285,11 +470,47 @@ export default function AppPage() {
         }
       }
     } catch {}
-    return out
-  })
+    if (Object.keys(out).length > 0) setPieceProgress(out)
+  }, [])
 
   // ---------- Tutorial mode ----------
   const measureMap = musicXmlState.status === "ready" ? musicXmlState.measureMap : []
+  measureMapRef.current = measureMap
+
+  // Weak spots: bars with the most recorded live-scoring misses, worst first.
+  // Only available for pieces with a measure map (MusicXML-derived) since bar
+  // boundaries aren't otherwise known.
+  const weakSpots = useMemo(() => {
+    if (!pieceHash || measureMap.length === 0) return []
+    const counts = getBarMissCounts(pieceHash)
+    return Object.entries(counts)
+      .map(([bar, count]) => ({ bar: Number(bar), count }))
+      .filter((w) => w.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+      .map((w) => {
+        const m = measureMap.find((mm) => mm.measure === w.bar)
+        return m ? { ...w, startSec: m.startSec, endSec: m.endSec } : null
+      })
+      .filter((w): w is { bar: number; count: number; startSec: number; endSec: number } => w !== null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pieceHash, measureMap, weakSpotVersion])
+
+  // Adaptive Practice Coach: ranked recommendations from the cross-piece
+  // weakness profile + this piece's current weak bars.
+  const recommendations = useMemo(
+    () => getRecommendations(weakSpots),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [weakSpots, weakSpotVersion]
+  )
+
+  // Practice history: per-piece session log + last-played timestamp, refreshed
+  // whenever the session timer attributes new minutes to the active piece.
+  const practiceHistory = useMemo(() => {
+    if (!pieceHash) return null
+    return getPracticeHistory(pieceHash)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pieceHash, historyVersion])
 
   const tutorialSegments: TutorialSegment[] = useMemo(() => {
     const xmlBased = generateTutorialSegments(
@@ -354,11 +575,38 @@ export default function AppPage() {
         staff: e.staff,
         voice: e.voice,
         measure: e.measure,
+        fingering: e.fingering,
         source: e.source,
       }))
     }
     return MOCK_NOTES
   }, [hybrid])
+
+  // Build/reset the scoring engine whenever a new piece's reference notes are ready.
+  // hybrid.events is already UnifiedNoteEvent[] — no adapter needed.
+  useEffect(() => {
+    if (hybrid.status === "ready" || hybrid.status === "midi-only" || hybrid.status === "xml-only") {
+      const windows = inputMode === "microphone" ? MIC_SCORING_WINDOWS : undefined
+      scoringEngineRef.current = new ScoringEngine(hybrid.events, windows)
+      referenceNotesByIdRef.current = new Map(hybrid.events.map((e) => [e.id, e]))
+
+      const prevByHand = new Map<string, UnifiedNoteEvent | null>()
+      for (const hand of ["left", "right"] as const) {
+        const handNotes = hybrid.events.filter((e) => e.hand === hand).sort((a, b) => a.startTime - b.startTime)
+        for (let i = 0; i < handNotes.length; i++) {
+          prevByHand.set(handNotes[i].id, i > 0 ? handNotes[i - 1] : null)
+        }
+      }
+      previousNoteByHandRef.current = prevByHand
+    } else {
+      scoringEngineRef.current = null
+      referenceNotesByIdRef.current = new Map()
+      previousNoteByHandRef.current = new Map()
+    }
+    setComboCount(0)
+    setLastVerdict(null)
+    setSessionSummary(null)
+  }, [hybrid, inputMode])
 
   const playbackDuration = useMemo(() => {
     if (midiState.status === "ready") return midiState.duration
@@ -407,21 +655,45 @@ export default function AppPage() {
     [visuallyFilteredPracticeNotes, playbackTime]
   )
 
+  // Scheduled-note highlights plus whatever the user is manually pressing right now
+  // (clicked/touched keys or mapped computer-keyboard keys).
+  const combinedActiveKeys = useMemo(() => {
+    if (manualActiveKeys.size === 0) return activeKeys
+    return [...activeKeys, ...manualActiveKeys]
+  }, [activeKeys, manualActiveKeys])
+
   // =========================================================================
   // Metadata for header
   // =========================================================================
-  const pieceName = selectedPiece?.title
+  const pieceName = activeExercise?.title
+    ?? selectedPiece?.title
     ?? (file?.name ? file.name.replace(/\.(mid|midi|musicxml|mxl|xml)$/i, "") : null)
     ?? (isComplete ? "Untitled Piece" : null)
-  const composerName = selectedPiece?.composer ?? ""
-  const bpm = midiState.status === "ready" && midiState.bpm ? Math.round(midiState.bpm) : null
+  const composerName = activeExercise ? "Warm-up exercise" : (selectedPiece?.composer ?? "")
+  const bpm =
+    (midiState.status === "ready" && midiState.bpm)
+      ? Math.round(midiState.bpm)
+      : (musicXmlState.status === "ready" && musicXmlState.detectedBpm)
+        ? Math.round(musicXmlState.detectedBpm)
+        : null
   // Actual BPM at current tempo setting
   const actualBpm = bpm ? Math.round(bpm * (tempo / 100)) : null
+  const hasPedalData = midiState.status === "ready" && (midiState.pedalEvents?.length ?? 0) > 0
 
   // =========================================================================
   // Audio engine init
   // =========================================================================
   useEffect(() => {
+    const hasAudioContext =
+      typeof window !== "undefined" &&
+      (typeof window.AudioContext !== "undefined" || typeof (window as any).webkitAudioContext !== "undefined")
+    if (!hasAudioContext) {
+      toast.error("Your browser doesn't support Web Audio", {
+        description: "Try the latest Chrome, Firefox, Safari, or Edge to use ScoreSense.",
+      })
+      return
+    }
+
     const engine = audioEngineRef.current
     const initEngine = async () => {
       try {
@@ -429,6 +701,7 @@ export default function AppPage() {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : "Unknown error"
         console.error("Audio engine failed to load:", errMsg)
+        toast.error("Couldn't load piano sounds", { description: errMsg })
       }
     }
 
@@ -486,25 +759,41 @@ export default function AppPage() {
     const url = URL.createObjectURL(file.fileObject)
     blobUrlRef.current = url
 
+    // Persist the raw bytes to IndexedDB so this upload survives a reload
+    // and shows up under "My Uploads" without asking the user to re-pick it.
+    saveUpload(file.fileObject)
+      .then(() => refreshMyUploads())
+      .catch(() => {})
+
+    audioEngineRef.current.stop()
+    audioEngineRef.current.setLoop({ enabled: false })
     setIsConverting(true)
     setIsComplete(false)
+    setActiveExercise(null)
     setMidiUrl(null)
     setMusicXmlUrl(null)
     setIsPlaying(false)
     setPlaybackTime(0)
+    setTutorialPlayerActive(false)
+    setCurrentLoop(null)
+    setLoopSelection("off")
+    setQuickLoopActive(false)
+    setDrillActive(false)
 
     if (/\.(mid|midi)$/i.test(file.name)) {
       setMidiUrl(url)
     } else {
       setMusicXmlUrl(url)
     }
-  }, [file])
+  }, [file, refreshMyUploads])
 
   const cancelConversion = useCallback(() => {
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current)
       blobUrlRef.current = null
     }
+    audioEngineRef.current.stop()
+    audioEngineRef.current.setLoop({ enabled: false })
     setIsConverting(false)
     setConversionStep(0)
     setConversionProgress(0)
@@ -513,19 +802,54 @@ export default function AppPage() {
     setMusicXmlUrl(null)
     setIsPlaying(false)
     setPlaybackTime(0)
+    setTutorialPlayerActive(false)
+    setCurrentLoop(null)
+    setLoopSelection("off")
+    setQuickLoopActive(false)
+    setDrillActive(false)
   }, [])
+
+  // Drive the conversion-status UI (step list + progress bar) from the
+  // underlying loader states, since neither loader reports fine-grained
+  // progress — this is coarse but keeps the UI from sitting frozen at 0%.
+  useEffect(() => {
+    if (!isConverting) return
+    if (midiState.status === "loading" || musicXmlState.status === "loading") {
+      setConversionStep(1)
+      setConversionProgress(25)
+    }
+    if (midiState.status === "ready" || musicXmlState.status === "ready") {
+      setConversionStep(3)
+      setConversionProgress(75)
+    }
+  }, [isConverting, midiState.status, musicXmlState.status])
 
   // Watch hybrid status to know when parsing is done
   useEffect(() => {
     if (!isConverting) return
     const { status } = hybrid
     if (/^(ready|midi-only|xml-only)$/.test(status)) {
+      setConversionStep(4)
+      setConversionProgress(100)
       setIsConverting(false)
       setIsComplete(true)
     } else if (/^error$/.test(status)) {
       setIsConverting(false)
     }
   }, [hybrid.status, isConverting])
+
+  // Surface parse failures — these previously failed silently (console only)
+  useEffect(() => {
+    if (midiState.status === "error") {
+      toast.error("Couldn't read this MIDI file", { description: midiState.error })
+    }
+  }, [midiState])
+
+  useEffect(() => {
+    if (musicXmlState.status === "error") {
+      toast.error("Couldn't read this MusicXML file", { description: musicXmlState.error })
+    }
+  }, [musicXmlState])
 
   // =========================================================================
   // Player Handlers
@@ -545,12 +869,19 @@ export default function AppPage() {
         engine.pause()
         setIsPlaying(false)
       } else {
+        // Defensive: a leftover post-roll phase from a previous segment
+        // interaction must not leak into regular playback (see the same
+        // reset in handlePlaySegment for why this flag can get stuck true).
+        isPracticePostRollRef.current = false
         await engine.play()
         setIsPlaying(true)
       }
     } catch (err) {
       console.error("Play/pause error:", err)
       setIsPlaying(false)
+      toast.error("Audio could not start", {
+        description: "Click anywhere on the page and try again.",
+      })
     }
   }, [isPlaying])
 
@@ -566,11 +897,26 @@ export default function AppPage() {
     }
   }, [])
 
+  const handlePracticeAgain = useCallback(() => {
+    setSessionSummary(null)
+    scoringEngineRef.current?.reset()
+    setComboCount(0)
+    setLastVerdict(null)
+    audioEngineRef.current.seek(0, { resume: false })
+    setPlaybackTime(0)
+  }, [])
+
   const handleMetronomeToggle = useCallback(() => {
     const next = !metronomeOn
     setMetronomeOn(next)
     audioEngineRef.current.setMetronome(next, bpm ?? 120)
   }, [metronomeOn, bpm])
+
+  const handleCountInToggle = useCallback(() => {
+    const next = !countInEnabled
+    setCountInEnabled(next)
+    audioEngineRef.current.setCountIn(next ? 4 : 0)
+  }, [countInEnabled])
 
   const handleTempoChange = useCallback((value: number) => {
     setTempo(value)
@@ -582,35 +928,183 @@ export default function AppPage() {
     if (engine.getState().status !== "ready") return
     try {
       await Tone.start()
-      const sampler = (engine as any).sampler
-      if (sampler) sampler.triggerAttackRelease("C4", 1)
+      engine.playNoteNow("C4", 0.8, 1)
     } catch (err) {
       console.error("Test tone error:", err)
     }
   }, [])
 
+  // Live (non-MIDI) input: a clicked/touched keyboard key, a mapped computer-keyboard
+  // press, or (silently, no synth playback) a detected microphone pitch. Plays the note
+  // immediately and, if a piece is loaded, feeds ScoringEngine — one event shape shared
+  // by every non-MIDI input source.
+  const handleLiveKeyPress = useCallback((note: string, down: boolean, opts?: { silent?: boolean }) => {
+    setManualActiveKeys((prev) => {
+      if (down === prev.has(note)) return prev
+      const next = new Set(prev)
+      if (down) next.add(note)
+      else next.delete(note)
+      return next
+    })
+    if (!down) return
+
+    const velocity = 0.85
+    if (!opts?.silent) {
+      const engine = audioEngineRef.current
+      if (engine.getState().status === "ready") {
+        Tone.start().catch(() => {})
+        engine.playNoteNow(note, velocity)
+      }
+    }
+
+    // Scoring against the loaded piece is the beta "play-along" feature —
+    // clicking/typing a note for sound (and for Chord Training, which reads
+    // manualActiveKeys above) still works either way.
+    if (!playAlongEnabledRef.current) return
+
+    const scoring = scoringEngineRef.current
+    if (!scoring) return
+    const midi = noteNameToMidi(note)
+    if (midi === null) return
+    const result = scoring.noteOn({ midi, time: playbackTimeRef.current, velocity })
+    if (result) {
+      setLastVerdict(result.verdict)
+      setLastHitNoteName(note)
+      setVerdictFlashToken((t) => t + 1)
+      setComboCount(scoring.getSummary().combo)
+    }
+  }, [])
+
+  // Microphone input: a third producer of the exact same live-note-event
+  // stream as the clickable keyboard and QWERTY mapping (silent — no synth
+  // playback, since the user is already producing sound acoustically).
+  const handleMicNote = useCallback(
+    (note: string, down: boolean) => handleLiveKeyPress(note, down, { silent: true }),
+    [handleLiveKeyPress]
+  )
+  const micInput = useMicInput(handleMicNote)
+  useEffect(() => {
+    if (inputMode !== "microphone") micInput.stop()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inputMode])
+  // Play-along is beta/opt-in — if it gets turned off, drop back to keyboard
+  // mode and release the microphone rather than leaving it listening silently.
+  useEffect(() => {
+    if (!playAlongEnabled) {
+      setInputMode("keyboard")
+      micInput.stop()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playAlongEnabled])
+
   const handleLoopChange = useCallback((value: string) => {
     setLoopSelection(value)
     if (value === "off") {
       setCurrentLoop(null)
+      setQuickLoopActive(false)
+      setDrillActive(false)
       audioEngineRef.current.setLoop({ enabled: false })
     }
   }, [])
 
-  const handleHandChange = useCallback((value: string) => setHandSelection(value), [])
+  const handleVolumeChange = useCallback((v: number) => {
+    setVolume(v)
+    audioEngineRef.current.setVolume(v)
+  }, [])
 
   const handleClearLoop = useCallback(() => {
     setCurrentLoop(null)
     setLoopSelection("off")
+    setQuickLoopActive(false)
+    setDrillActive(false)
     audioEngineRef.current.setLoop({ enabled: false })
+  }, [])
+
+  // Repeat count applies to bar/named/timeline loops (not Quick Loop, which
+  // always runs until explicitly toggled off). Changing it while a loop of
+  // that kind is already active re-arms the wrap counter immediately.
+  const handleLoopRepeatTargetChange = useCallback((target: number | null) => {
+    setLoopRepeatTarget(target)
+    const engine = audioEngineRef.current
+    if (loopSelection !== "off" && !quickLoopActive && engine.isLooping()) {
+      engine.setLoop({ enabled: true, repeatTarget: target })
+    }
+  }, [loopSelection, quickLoopActive])
+
+  const handleTempoRampToggle = useCallback(() => {
+    setTempoRampActive((v) => !v)
   }, [])
 
   const handlePracticeSection = useCallback((start: number, end: number) => {
     setCurrentLoop({ start, end })
     setLoopSelection("custom")
-    audioEngineRef.current.setLoop({ enabled: true, startSec: start, endSec: end })
+    setQuickLoopActive(false)
+    setDrillActive(false)
+    audioEngineRef.current.setLoop({ enabled: true, startSec: start, endSec: end, repeatTarget: loopRepeatTarget })
     setActiveTab("player") // switch to player tab
-  }, [])
+  }, [loopRepeatTarget])
+
+  // One-click loop of the next QUICK_LOOP_SEC seconds from wherever playback
+  // currently is. The engine only tracks a single loop region, so engaging
+  // this supersedes any bar/named loop selection (and vice versa — see the
+  // setQuickLoopActive(false) resets in the other loop handlers).
+  const handleQuickLoopToggle = useCallback(() => {
+    const engine = audioEngineRef.current
+    if (quickLoopActive) {
+      setQuickLoopActive(false)
+      engine.setLoop({ enabled: false })
+      return
+    }
+
+    setCurrentLoop(null)
+    setLoopSelection("off")
+    setDrillActive(false)
+
+    let startSec = playbackTime
+    let endSec = startSec + QUICK_LOOP_SEC
+    // Near the end of the piece: keep the loop a full QUICK_LOOP_SEC long by
+    // anchoring it to the piece's end instead of shrinking to a tiny sliver.
+    if (playbackDuration > 0 && endSec > playbackDuration) {
+      endSec = playbackDuration
+      startSec = Math.max(0, endSec - QUICK_LOOP_SEC)
+    }
+
+    // Quick Loop always runs until explicitly toggled off — never inherits the
+    // repeat-count setting, which would otherwise silently disable it out from
+    // under the button's own on/off state.
+    engine.setLoop({ enabled: true, startSec, endSec, repeatTarget: null })
+    setQuickLoopActive(true)
+    if (!isPlaying) handlePlayPause()
+  }, [quickLoopActive, playbackTime, playbackDuration, isPlaying, handlePlayPause])
+
+  // Same one-click 5s loop as Quick Loop, but also drops tempo to half speed —
+  // a one-tap "slow this bit down" shortcut. Toggling off just stops the loop;
+  // tempo is left wherever it is (same as any other tempo change in the app,
+  // nothing else auto-restores tempo either).
+  const handleDrillToggle = useCallback(() => {
+    const engine = audioEngineRef.current
+    if (drillActive) {
+      setDrillActive(false)
+      engine.setLoop({ enabled: false })
+      return
+    }
+
+    setCurrentLoop(null)
+    setLoopSelection("off")
+    setQuickLoopActive(false)
+
+    let startSec = playbackTime
+    let endSec = startSec + QUICK_LOOP_SEC
+    if (playbackDuration > 0 && endSec > playbackDuration) {
+      endSec = playbackDuration
+      startSec = Math.max(0, endSec - QUICK_LOOP_SEC)
+    }
+
+    handleTempoChange(Math.max(25, Math.round(tempoRef.current * 0.5)))
+    engine.setLoop({ enabled: true, startSec, endSec, repeatTarget: null })
+    setDrillActive(true)
+    if (!isPlaying) handlePlayPause()
+  }, [drillActive, playbackTime, playbackDuration, isPlaying, handlePlayPause, handleTempoChange])
 
   const handleSeek = useCallback((seconds: number) => {
     audioEngineRef.current.seek(seconds, { resume: isPlaying })
@@ -624,16 +1118,77 @@ export default function AppPage() {
     }
     setSelectedPiece(piece)
     setFile(null)
+    setActiveExercise(null)
+
+    // Reset the engine's own transport position, not just the React state —
+    // otherwise Transport.seconds keeps whatever position the previous piece
+    // was at, and if the new piece is shorter, playbackTime can display (or
+    // even resume from) a position past the new piece's own duration.
+    audioEngineRef.current.stop()
+    audioEngineRef.current.setLoop({ enabled: false })
+
+    setPlaybackTime(0)
+    setIsPlaying(false)
+    setTutorialPlayerActive(false)
+    setCurrentLoop(null)
+    setLoopSelection("off")
+    setQuickLoopActive(false)
+    setDrillActive(false)
+
+    // "My Uploads" pieces have no server file path — reconstruct a blob URL
+    // from IndexedDB instead of hitting /api/piece.
+    if (piece.uploadId) {
+      const isMidi = !!piece.midiPath
+      setMidiUrl(null)
+      setMusicXmlUrl(null)
+      getUploadBlob(piece.uploadId).then((blob) => {
+        if (!blob) return
+        const url = URL.createObjectURL(blob)
+        blobUrlRef.current = url
+        if (isMidi) setMidiUrl(url)
+        else setMusicXmlUrl(url)
+        setIsComplete(true)
+      })
+      return
+    }
 
     const pieceMidiUrl = piece.midiPath ? `/api/piece?path=${encodeURIComponent(piece.midiPath)}` : null
     const pieceXmlUrl = piece.xmlPath ? `/api/piece?path=${encodeURIComponent(piece.xmlPath)}` : null
 
     setMidiUrl(pieceMidiUrl)
     setMusicXmlUrl(pieceXmlUrl)
-
     setIsComplete(true)
+  }, [])
+
+  // Warm-up/technique exercises are generated in-memory, then serialized to a
+  // real (tiny) MIDI file so they flow through the exact same midiUrl -> parse
+  // -> hybrid-align -> score pipeline as any uploaded or library piece.
+  const handleSelectExercise = useCallback((exercise: ExerciseDefinition) => {
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current)
+      blobUrlRef.current = null
+    }
+    setSelectedPiece(null)
+    setFile(null)
+    setActiveExercise(exercise)
+
+    audioEngineRef.current.stop()
+    audioEngineRef.current.setLoop({ enabled: false })
+
     setPlaybackTime(0)
     setIsPlaying(false)
+    setTutorialPlayerActive(false)
+    setCurrentLoop(null)
+    setLoopSelection("off")
+    setQuickLoopActive(false)
+    setDrillActive(false)
+
+    const url = exerciseToMidiBlobUrl(exercise)
+    blobUrlRef.current = url
+    setMusicXmlUrl(null)
+    setMidiUrl(url)
+    setIsComplete(true)
+    setActiveTab("player")
   }, [])
 
   useEffect(() => {
@@ -655,15 +1210,16 @@ export default function AppPage() {
     loadLibrary()
   }, [])
 
-  // Set notes to audio engine based on handAudioMode
+  // Set notes to audio engine based on handAudioMode.
+  // Each note's own stable id (string or number) is passed through as-is —
+  // the engine keys per-voice attack/release by this id, so mangling it
+  // (e.g. parseInt-ing a compound string id down to NaN, as this used to
+  // do) would collapse every note onto one shared identity and reintroduce
+  // exactly the same-pitch collision this architecture exists to prevent.
   useEffect(() => {
     const engine = audioEngineRef.current
     const filteredNotes = filterNotesByAudioHand(notesForPlayer, handAudioMode)
-      .map((note) => ({
-        ...note,
-        id: typeof note.id === "string" ? parseInt(note.id, 10) : note.id,
-      }))
-    
+
     // Extract pedal events from hybrid state if available
     let pedalEvents = undefined
     if (hybrid.status === "ready" || hybrid.status === "midi-only") {
@@ -740,7 +1296,15 @@ export default function AppPage() {
     const animate = () => {
       try {
         const engine = audioEngineRef.current
-        engine.tickLoop()
+        const loopTickResult = engine.tickLoop()
+        if (loopTickResult === "completed") {
+          toast.success("Loop finished", { description: `Repeated ${loopRepeatTargetRef.current}x — looping is now off.` })
+          setLoopSelection("off")
+          setCurrentLoop(null)
+        } else if (loopTickResult === "wrapped" && tempoRampActiveRef.current) {
+          const nextTempo = Math.min(100, tempoRef.current + TEMPO_RAMP_STEP)
+          if (nextTempo !== tempoRef.current) handleTempoChange(nextTempo)
+        }
 
         // ── PRACTICE LEAD-IN PHASE ──────────────────────────────────────────
         // Virtual visual clock ticks ahead of silent, parked audio.
@@ -795,7 +1359,48 @@ export default function AppPage() {
 
         // ── NORMAL PLAYBACK ─────────────────────────────────────────────────
         const currentTime = engine.getTime()
+
+        // "Wait for note" practice mode: hold the transport (and therefore
+        // the visualizer) exactly here until the note that's due gets played
+        // correctly. Skips tick()'s miss-resolution entirely while waiting,
+        // so a held note is never scored a miss out from under the player.
+        if (playAlongEnabledRef.current && waitForNoteRef.current && scoringEngineRef.current?.hasPendingNoteAt(currentTime)) {
+          if (!isWaitingForNoteRef.current) {
+            isWaitingForNoteRef.current = true
+            setIsWaitingForNote(true)
+            engine.pause()
+          }
+          animationRef.current = requestAnimationFrame(animate)
+          return
+        }
+        if (isWaitingForNoteRef.current) {
+          isWaitingForNoteRef.current = false
+          setIsWaitingForNote(false)
+          engine.resumeFromSeek()
+        }
+
         setPlaybackTime(currentTime)
+        setPedalActive(engine.getPedalState())
+        setBeatPhase(engine.getBeatPhase(bpm ?? 120))
+        // Scoring/miss-tracking is the beta "play-along" feature — skip tick()
+        // entirely when it's off, so untouched notes never get recorded as
+        // misses just because nobody was trying to play along.
+        const missResults = playAlongEnabledRef.current ? scoringEngineRef.current?.tick(currentTime) ?? [] : []
+        if (missResults.length > 0 && pieceHashRef.current) {
+          const weaknessTags: string[] = []
+          for (const r of missResults) {
+            const ref = referenceNotesByIdRef.current.get(r.refNoteId)
+            if (!ref) continue
+            const bar = measureMapRef.current.find(
+              (m) => ref.startTime >= m.startSec && ref.startTime < m.endSec
+            )?.measure
+            if (bar !== undefined) recordBarMiss(pieceHashRef.current, bar)
+            weaknessTags.push(classifyMissTag(ref, previousNoteByHandRef.current.get(ref.id) ?? null))
+          }
+          recordPieceWeaknessTags(pieceHashRef.current, weaknessTags)
+          recordCoachWeaknessTags(weaknessTags)
+          setWeakSpotVersion((v) => v + 1)
+        }
 
         // Only impose segment boundary when the user explicitly started a tutorial segment
         const activeSeg = tutorialPlayerActive ? activeTutorialSegment : null
@@ -813,6 +1418,12 @@ export default function AppPage() {
         } else {
           // No active tutorial segment — fall back to natural piece end
           if (currentTime >= playbackDuration) {
+            const scoring = scoringEngineRef.current
+            if (scoring && playAlongEnabledRef.current) {
+              scoring.tick(playbackDuration)
+              const summary = scoring.getSummary()
+              if (summary.notesResolved > 0) setSessionSummary(summary)
+            }
             engine.stop()
             setPlaybackTime(0)
             setIsPlaying(false)
@@ -889,6 +1500,33 @@ export default function AppPage() {
     cacheAnalysis(pieceHash, ALGO_VERSION, result.segments, result.lessons, result.insights)
   }, [midiState, musicXmlState.status, pieceHash])
 
+  // Difficulty heuristic: compute once per piece and cache, so the Piece
+  // Library can show a 1-5 badge without re-parsing on every render.
+  useEffect(() => {
+    if (!pieceHash || notesForPlayer.length === 0 || notesForPlayer === MOCK_NOTES) return
+    if (getCachedDifficulty(pieceHash) != null) return
+    const difficulty = computeDifficulty(
+      notesForPlayer.map((n) => ({ midi: n.midi ?? 0, startTime: n.startTime })),
+      bpm ?? 120,
+      playbackDuration
+    )
+    cacheDifficulty(pieceHash, difficulty)
+  }, [pieceHash, notesForPlayer, bpm, playbackDuration])
+
+  // Chord mastery: every distinct chord recognized in this piece's harmonic
+  // analysis counts as "seen" toward the Chord Encyclopedia's exposure stats.
+  useEffect(() => {
+    if (patternInsights.length === 0) return
+    const symbols = new Set<string>()
+    for (const insight of patternInsights) {
+      for (const symbol of insight.chordProgression ?? []) symbols.add(symbol)
+    }
+    const ids = Array.from(symbols)
+      .map((symbol) => findChordDefinitionBySymbol(symbol)?.id)
+      .filter((id): id is string => !!id)
+    recordChordSeenInPieces(ids)
+  }, [patternInsights])
+
   useEffect(() => {
     if (!pieceHash || !isPlaying) return
     const interval = setInterval(() => saveLastPosition(pieceHash, playbackTime), 2000)
@@ -940,6 +1578,18 @@ export default function AppPage() {
     [measureMap, playbackTime]
   )
 
+  // Live "what chord is this" readout for the current bar, using the same
+  // detector the falling-notes visualizer and the Insights tab both use.
+  const currentChordLabel = useMemo(() => {
+    if (!liveChordDisplayEnabled || currentBar == null) return null
+    const barEntry = measureMap.find((m) => m.measure === currentBar)
+    if (!barEntry) return null
+    const barMidis = notesForPlayer
+      .filter((n) => n.midi != null && n.startTime >= barEntry.startSec && n.startTime < barEntry.endSec)
+      .map((n) => n.midi as number)
+    return detectChord(barMidis)?.symbol ?? null
+  }, [liveChordDisplayEnabled, currentBar, measureMap, notesForPlayer])
+
   const barsToSeconds = useCallback(
     (startBar: number, endBar: number): { startSec: number; endSec: number } | null => {
       const startEntry = measureMap.find((m) => m.measure === startBar)
@@ -967,9 +1617,11 @@ export default function AppPage() {
       if (!range) return
       setCurrentLoop({ start: startBar, end: endBar })
       setLoopSelection("custom")
-      audioEngineRef.current.setLoop({ enabled: true, startSec: range.startSec, endSec: range.endSec })
+      setQuickLoopActive(false)
+      setDrillActive(false)
+      audioEngineRef.current.setLoop({ enabled: true, startSec: range.startSec, endSec: range.endSec, repeatTarget: loopRepeatTarget })
     },
-    [barsToSeconds]
+    [barsToSeconds, loopRepeatTarget]
   )
 
   // Set loop from seconds (timeline drag — finds nearest bars when measureMap exists)
@@ -986,10 +1638,12 @@ export default function AppPage() {
       } else {
         setCurrentLoop({ start: startSec, end: endSec })
         setLoopSelection("custom")
-        audioEngineRef.current.setLoop({ enabled: true, startSec, endSec })
+        setQuickLoopActive(false)
+        setDrillActive(false)
+        audioEngineRef.current.setLoop({ enabled: true, startSec, endSec, repeatTarget: loopRepeatTarget })
       }
     },
-    [measureMap, handleSetBarLoop]
+    [measureMap, handleSetBarLoop, loopRepeatTarget]
   )
 
   // Loop the single bar at current playback position
@@ -1008,7 +1662,18 @@ export default function AppPage() {
     audioEngineRef.current.setLoop({ enabled: false })
     setCurrentLoop(null)
     setLoopSelection("off")
+    setQuickLoopActive(false)
+    setDrillActive(false)
     postRollFiredRef.current = false
+    // Clear any stale post-roll phase from whatever segment was previously
+    // active — otherwise, if the user jumps to a new segment while the old
+    // one is still lingering in its post-roll window, this flag stays stuck
+    // true. The very next tick after THIS segment's lead-in completes would
+    // then wrongly re-enter the (stale) post-roll branch using leftover
+    // wall-clock refs, computing a huge bogus "elapsed" and immediately
+    // halting playback right after the first note — looking like the
+    // falling-note visuals just freeze.
+    isPracticePostRollRef.current = false
 
     // Park audio at the section start (silent, not playing yet)
     audioEngineRef.current.seek(seg.startTime, { resume: false })
@@ -1032,7 +1697,9 @@ export default function AppPage() {
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === "INPUT" || tag === "TEXTAREA") return
       if (e.key === "?") { setShowShortcuts((v) => !v); return }
-      if (e.key === "Escape") { setShowShortcuts(false); return }
+      if (e.key === "Escape") { setShowShortcuts(false); setChordTraining(null); return }
+      const mappedNote = QWERTY_NOTE_MAP[e.key.toLowerCase()]
+      if (mappedNote && !e.repeat) { handleLiveKeyPress(mappedNote, true); return }
       if (!isComplete) return
       if (e.key === " " && !e.repeat) {
         e.preventDefault(); handlePlayPause()
@@ -1050,9 +1717,17 @@ export default function AppPage() {
         if (prev) handlePlaySegment(prev)
       }
     }
+    const upHandler = (e: KeyboardEvent) => {
+      const mappedNote = QWERTY_NOTE_MAP[e.key.toLowerCase()]
+      if (mappedNote) handleLiveKeyPress(mappedNote, false)
+    }
     window.addEventListener("keydown", handler)
-    return () => window.removeEventListener("keydown", handler)
-  }, [isComplete, handlePlayPause, handleLoopCurrentBar, handlePlaySegment, tutorialMode])
+    window.addEventListener("keyup", upHandler)
+    return () => {
+      window.removeEventListener("keydown", handler)
+      window.removeEventListener("keyup", upHandler)
+    }
+  }, [isComplete, handlePlayPause, handleLoopCurrentBar, handlePlaySegment, tutorialMode, handleLiveKeyPress])
 
   const handleSaveNamedLoop = useCallback(
     (name: string) => {
@@ -1086,9 +1761,11 @@ export default function AppPage() {
     (loop: NamedLoop) => {
       setCurrentLoop({ start: loop.startBar, end: loop.endBar })
       setLoopSelection("custom")
-      audioEngineRef.current.setLoop({ enabled: true, startSec: loop.startSec, endSec: loop.endSec })
+      setQuickLoopActive(false)
+      setDrillActive(false)
+      audioEngineRef.current.setLoop({ enabled: true, startSec: loop.startSec, endSec: loop.endSec, repeatTarget: loopRepeatTarget })
     },
-    []
+    [loopRepeatTarget]
   )
 
   // =========================================================================
@@ -1143,6 +1820,7 @@ export default function AppPage() {
                         type="button"
                         onClick={handleClearLoop}
                         className="hover:bg-accent/20 rounded-full p-0.5 transition-colors"
+                        aria-label="Clear loop"
                       >
                         <XIcon className="h-2.5 w-2.5" />
                       </button>
@@ -1211,6 +1889,13 @@ export default function AppPage() {
               isConverting={isConverting}
               isComplete={isComplete}
               onCancel={cancelConversion}
+              error={
+                midiState.status === "error"
+                  ? midiState.error
+                  : musicXmlState.status === "error"
+                    ? musicXmlState.error
+                    : null
+              }
             />
           </div>
         )}
@@ -1229,6 +1914,24 @@ export default function AppPage() {
             <TabsTrigger value="insights" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
               <Lightbulb className="h-3.5 w-3.5" />
               Insights
+            </TabsTrigger>
+            <TabsTrigger value="chords" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
+              <Music2 className="h-3.5 w-3.5" />
+              Chords
+            </TabsTrigger>
+            <TabsTrigger value="warmup" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
+              <Dumbbell className="h-3.5 w-3.5" />
+              Warm-up
+            </TabsTrigger>
+            {musicXmlUrl && (
+              <TabsTrigger value="notation" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
+                <FileText className="h-3.5 w-3.5" />
+                Notation
+              </TabsTrigger>
+            )}
+            <TabsTrigger value="settings" className="gap-1.5 data-[state=active]:bg-background data-[state=active]:text-foreground">
+              <SettingsIcon className="h-3.5 w-3.5" />
+              Settings
             </TabsTrigger>
           </TabsList>
 
@@ -1280,11 +1983,14 @@ export default function AppPage() {
                   handVisualMode={handVisualMode}
                   showNoteNames={showNoteNames}
                   showKeyLabels={showKeyLabels}
+                  colorblindMode={colorblindMode}
                   currentLoop={currentLoop}
                   tempo={tempo}
-                  activeKeys={activeKeys}
-                  currentLessonTitle={null}
+                  activeKeys={combinedActiveKeys}
+                  currentLessonTitle={tutorialPlayerActive && activeTutorialSegment ? activeTutorialSegment.title : null}
                   loopEndTimeSec={currentLoopSec?.endSec}
+                  onKeyPress={handleLiveKeyPress}
+                  showChordLabel={liveChordDisplayEnabled}
                 />
                 {isComplete && notesForPlayer.length > 0 && (
                   <PieceTimeline
@@ -1327,6 +2033,107 @@ export default function AppPage() {
                         {fmtDuration(playbackTime)} / {fmtDuration(playbackDuration)}
                       </span>
                     </div>
+                    {/* Seek bar — drag or use arrow keys to nudge by 1s; buttons jump 5s */}
+                    <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                      <button
+                        type="button"
+                        onClick={() => handleSeek(Math.max(0, playbackTime - 5))}
+                        className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                        aria-label="Rewind 5 seconds"
+                      >
+                        <SkipBack className="h-4 w-4" />
+                      </button>
+                      <input
+                        type="range"
+                        min={0}
+                        max={Math.max(playbackDuration, 0.01)}
+                        step={1}
+                        value={scrubSeconds ?? playbackTime}
+                        onChange={(e) => setScrubSeconds(Number(e.target.value))}
+                        onMouseUp={(e) => {
+                          handleSeek(Number((e.target as HTMLInputElement).value))
+                          setScrubSeconds(null)
+                        }}
+                        onTouchEnd={(e) => {
+                          handleSeek(Number((e.target as HTMLInputElement).value))
+                          setScrubSeconds(null)
+                        }}
+                        onKeyUp={(e) => {
+                          if (
+                            ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(
+                              e.key
+                            )
+                          ) {
+                            handleSeek(Number((e.target as HTMLInputElement).value))
+                            setScrubSeconds(null)
+                          }
+                        }}
+                        className="flex-1 accent-accent min-w-0"
+                        aria-label="Seek through piece"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSeek(Math.min(playbackDuration, playbackTime + 5))}
+                        className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                        aria-label="Fast-forward 5 seconds"
+                      >
+                        <SkipForward className="h-4 w-4" />
+                      </button>
+                    </div>
+                    {/* Quick Loop — one click loops the next 5s from wherever playback is */}
+                    <button
+                      type="button"
+                      onClick={handleQuickLoopToggle}
+                      disabled={!isComplete}
+                      className={[
+                        "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+                        quickLoopActive
+                          ? "bg-accent/15 border-accent/30 text-accent"
+                          : "border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary/60",
+                      ].join(" ")}
+                      aria-label={quickLoopActive ? "Stop quick loop" : "Loop the next 5 seconds"}
+                    >
+                      <Repeat className="h-3 w-3" />
+                      Quick Loop
+                    </button>
+                    {/* Drill — same 5s loop, but also drops tempo to half speed */}
+                    <button
+                      type="button"
+                      onClick={handleDrillToggle}
+                      disabled={!isComplete}
+                      className={[
+                        "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+                        drillActive
+                          ? "bg-accent/15 border-accent/30 text-accent"
+                          : "border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary/60",
+                      ].join(" ")}
+                      aria-label={drillActive ? "Stop drilling this passage" : "Drill the next 5 seconds at half speed"}
+                    >
+                      <Repeat className="h-3 w-3" />
+                      Drill 50%
+                    </button>
+                    {/* Pedal indicator — only shown when the piece actually has CC64 automation */}
+                    {hasPedalData && (
+                      <div className="shrink-0">
+                        <PedalIndicator active={pedalActive} />
+                      </div>
+                    )}
+                    {/* Live chord readout for the bar currently playing */}
+                    {currentChordLabel && (
+                      <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs font-semibold text-accent">
+                        {currentChordLabel}
+                      </span>
+                    )}
+                    {/* Live scoring feedback — verdict flash, combo, and "wait for note" status (beta) */}
+                    {playAlongEnabled && (
+                      <ScoringHUD
+                        combo={comboCount}
+                        lastVerdict={lastVerdict}
+                        lastNoteName={lastHitNoteName}
+                        flashToken={verdictFlashToken}
+                        isWaitingForNote={isWaitingForNote}
+                      />
+                    )}
                     {/* Tempo row — wraps below on narrow screens */}
                     <div className="flex items-center gap-2 flex-1 min-w-[160px]">
                       <span className="text-xs text-muted-foreground shrink-0">Tempo</span>
@@ -1349,8 +2156,55 @@ export default function AppPage() {
 
               {/* Sidebar: Piece library + tutorial + controls */}
               <div className="lg:w-80 shrink-0 space-y-4">
+                {playAlongEnabled && (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between rounded-xl border border-border/40 bg-card/50 px-3 py-2.5">
+                    <span className="text-xs font-medium text-foreground">Play-along input</span>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setInputMode("keyboard")}
+                        className={`rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                          inputMode === "keyboard"
+                            ? "bg-accent text-accent-foreground"
+                            : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                        }`}
+                      >
+                        Keyboard
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setInputMode("microphone")}
+                        className={`rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                          inputMode === "microphone"
+                            ? "bg-accent text-accent-foreground"
+                            : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                        }`}
+                      >
+                        Microphone
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between rounded-xl border border-border/40 bg-card/50 px-3 py-2.5">
+                    <div className="min-w-0 pr-2">
+                      <span className="text-xs font-medium text-foreground">Wait for correct note</span>
+                      <p className="text-[11px] text-muted-foreground">Pauses playback until you play the right note.</p>
+                    </div>
+                    <Switch checked={waitForNoteEnabled} onCheckedChange={setWaitForNoteEnabled} />
+                  </div>
+                  {inputMode === "microphone" && (
+                    <MicInputPanel
+                      state={micInput.state}
+                      reading={micInput.reading}
+                      level={micInput.level}
+                      onStart={micInput.start}
+                      onStop={micInput.stop}
+                    />
+                  )}
+                </div>
+                )}
                 <PieceLibrary
-                  pieces={pieceLibrary}
+                  pieces={combinedPieceLibrary}
                   selectedPiece={selectedPiece}
                   onSelectPiece={handleSelectPiece}
                   defaultCollapsed={isComplete}
@@ -1407,16 +2261,16 @@ export default function AppPage() {
                   onPlayPause={handlePlayPause}
                   onReset={handleReset}
                   onMetronomeToggle={handleMetronomeToggle}
+                  countInEnabled={countInEnabled}
+                  onCountInToggle={handleCountInToggle}
+                  beatPhase={beatPhase}
                   onTempoChange={handleTempoChange}
                   onClearLoop={handleClearLoop}
                   onSeek={handleSeek}
                   onTestTone={handleTestTone}
                   loopSelection={loopSelection}
-                  handSelection={handSelection}
                   loopOptions={LOOP_OPTIONS}
-                  handOptions={HAND_OPTIONS}
                   onLoopChange={handleLoopChange}
-                  onHandChange={handleHandChange}
                   totalBars={totalBars}
                   onSetBarLoop={handleSetBarLoop}
                   onLoopCurrentBar={handleLoopCurrentBar}
@@ -1425,14 +2279,22 @@ export default function AppPage() {
                   onSaveLoop={handleSaveNamedLoop}
                   onDeleteLoop={handleDeleteNamedLoop}
                   onSelectNamedLoop={handleSelectNamedLoop}
+                  loopRepeatTarget={loopRepeatTarget}
+                  onLoopRepeatTargetChange={handleLoopRepeatTargetChange}
+                  tempoRampActive={tempoRampActive}
+                  onTempoRampToggle={handleTempoRampToggle}
                   handAudioMode={handAudioMode}
                   handVisualMode={handVisualMode}
                   onHandAudioModeChange={setHandAudioMode}
                   onHandVisualModeChange={setHandVisualMode}
+                  volume={volume}
+                  onVolumeChange={handleVolumeChange}
                   showNoteNames={showNoteNames}
                   showKeyLabels={showKeyLabels}
                   onShowNoteNamesChange={setShowNoteNames}
                   onShowKeyLabelsChange={setShowKeyLabels}
+                  colorblindMode={colorblindMode}
+                  onColorblindModeChange={setColorblindMode}
                 />
               </div>
             </div>
@@ -1447,6 +2309,48 @@ export default function AppPage() {
               isComplete={isComplete}
               pieceLoaded={isComplete || midiState.status === "ready"}
               onPracticeSection={handlePracticeSection}
+              weakSpots={weakSpots}
+              practiceHistory={practiceHistory}
+              recommendations={recommendations}
+            />
+          </TabsContent>
+
+          {/* --------------------------------------------------------------- */}
+          {/* CHORDS TAB */}
+          {/* --------------------------------------------------------------- */}
+          <TabsContent value="chords">
+            <ChordEncyclopedia onStartTraining={(focusChordId) => setChordTraining({ focusChordId })} />
+          </TabsContent>
+
+          {/* --------------------------------------------------------------- */}
+          {/* WARM-UP TAB */}
+          {/* --------------------------------------------------------------- */}
+          <TabsContent value="warmup">
+            <WarmupTab
+              onSelectExercise={handleSelectExercise}
+              activeExerciseId={activeExercise?.id ?? null}
+              recommendations={recommendations}
+            />
+          </TabsContent>
+
+          {/* --------------------------------------------------------------- */}
+          {/* NOTATION TAB */}
+          {/* --------------------------------------------------------------- */}
+          {musicXmlUrl && (
+            <TabsContent value="notation">
+              <NotationView xmlUrl={musicXmlUrl} currentBar={currentBar} />
+            </TabsContent>
+          )}
+
+          {/* --------------------------------------------------------------- */}
+          {/* SETTINGS TAB */}
+          {/* --------------------------------------------------------------- */}
+          <TabsContent value="settings">
+            <SettingsTab
+              playAlongEnabled={playAlongEnabled}
+              onPlayAlongEnabledChange={handlePlayAlongEnabledChange}
+              liveChordDisplayEnabled={liveChordDisplayEnabled}
+              onLiveChordDisplayEnabledChange={handleLiveChordDisplayEnabledChange}
             />
           </TabsContent>
         </Tabs>
@@ -1458,6 +2362,24 @@ export default function AppPage() {
         achievement={achievementQueue[0] ?? null}
         onDismiss={dismissAchievement}
       />
+
+      {/* Live-scoring session summary (beta) — shown once a piece finishes with played-along notes */}
+      {playAlongEnabled && sessionSummary && (
+        <SessionSummaryModal
+          summary={sessionSummary}
+          onClose={() => setSessionSummary(null)}
+          onPracticeAgain={handlePracticeAgain}
+        />
+      )}
+
+      {/* Chord training session */}
+      {chordTraining && (
+        <ChordTrainingSession
+          heldNotes={Array.from(manualActiveKeys)}
+          focusChordId={chordTraining.focusChordId}
+          onClose={() => setChordTraining(null)}
+        />
+      )}
 
       {/* Keyboard shortcuts overlay */}
       {showShortcuts && (
@@ -1475,6 +2397,7 @@ export default function AppPage() {
                 type="button"
                 onClick={() => setShowShortcuts(false)}
                 className="text-muted-foreground hover:text-foreground transition-colors text-lg leading-none"
+                aria-label="Close keyboard shortcuts"
               >
                 ×
               </button>
@@ -1496,6 +2419,9 @@ export default function AppPage() {
                 </div>
               ))}
             </div>
+            <p className="mt-3 text-[10px] text-muted-foreground/70 text-center">
+              A W S E D F T G Y H U J K play notes C4–C5 along with the piece — or click/tap the on-screen keyboard.
+            </p>
             <p className="mt-4 text-[10px] text-muted-foreground/60 text-center">
               Shortcuts are disabled when an input is focused
             </p>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import {
   Upload,
   Music,
@@ -13,9 +14,6 @@ import {
   FileImage,
   Gauge,
   ChevronRight,
-  Pause,
-  SkipBack,
-  SkipForward,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -125,7 +123,7 @@ function Hero() {
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-accent/5 via-transparent to-transparent" />
       <div className="relative z-10 mx-auto max-w-4xl text-center">
         <h1 className="text-balance text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl lg:text-7xl">
-          Turn sheet music into a learnable piano tutorial.
+          Turn any MIDI or MusicXML file into a learnable piano tutorial.
         </h1>
         <p className="mx-auto mt-6 max-w-2xl text-pretty text-lg text-muted-foreground sm:text-xl">
           Upload a MIDI or MusicXML file and get an interactive piano tutorial
@@ -157,7 +155,7 @@ function HowItWorks() {
     {
       icon: Upload,
       title: "Upload",
-      description: "Drop your sheet music",
+      description: "Drop your MIDI or MusicXML file",
       bullets: [
         "Supports MIDI and MusicXML formats",
         "Drag & drop or browse files",
@@ -167,7 +165,7 @@ function HowItWorks() {
     {
       icon: Music,
       title: "Parse",
-      description: "Instant score analysis",
+      description: "Instant note-accurate parsing",
       bullets: [
         "Reads MIDI and MusicXML natively",
         "Note-accurate with hand separation",
@@ -308,138 +306,27 @@ function Features() {
   );
 }
 
-// Fixed demo note columns: each entry is an array of marginTop values for that column
-const DEMO_NOTES: number[][] = [
-  [4], [12, 3], [8], [1, 14], [6], [10, 2], [3], [15, 7],
-  [9], [5, 11], [2], [13], [7, 1], [4], [16, 8], [3],
-  [6, 12], [2], [9, 5], [14], [3, 7], [11], [1, 8], [5, 13],
-]
-
 function DemoPreview() {
   return (
     <section className="relative border-t border-border/50 bg-card/30 py-24">
-      <div className="mx-auto max-w-4xl px-6">
+      <div className="mx-auto max-w-5xl px-6">
         <div className="text-center">
           <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
             See it in action
           </h2>
           <p className="mt-4 text-muted-foreground">
-            A preview of the practice interface
+            A real screenshot of the practice interface — mid-playback, falling notes, the 88-key keyboard, and the piece library, exactly as it looks.
           </p>
         </div>
-        <div className="mt-12 overflow-hidden rounded-2xl border border-border bg-card p-6 shadow-2xl shadow-accent/5">
-          {/* Track Title */}
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="font-semibold">Moonlight Sonata</h3>
-              <p className="text-sm text-muted-foreground">
-                Ludwig van Beethoven
-              </p>
-            </div>
-            <div className="flex items-center gap-2 rounded-full border border-accent/50 bg-accent/10 px-3 py-1 text-xs text-accent">
-              <Repeat className="h-3 w-3" />
-              Repeat detected
-            </div>
-          </div>
-
-          {/* Timeline */}
-          <div className="mt-8">
-            <div className="relative h-16 rounded-lg bg-secondary">
-              {/* Progress bar */}
-              <div className="absolute left-0 top-0 h-full w-1/3 rounded-l-lg bg-accent/20" />
-              {/* Playhead */}
-              <div className="absolute left-1/3 top-0 h-full w-0.5 bg-accent" />
-              {/* Note visualization */}
-              <div className="absolute inset-0 flex items-center px-4">
-                {DEMO_NOTES.map((col, i) => (
-                  <div
-                    key={i}
-                    className="flex-1 flex flex-col gap-1 px-0.5"
-                  >
-                    {col.map((mt, j) => (
-                      <div
-                        key={j}
-                        className={`h-2 rounded-sm ${
-                          i < 8
-                            ? "bg-accent/60"
-                            : i < 16
-                              ? "bg-muted-foreground/30"
-                              : "bg-accent/30"
-                        }`}
-                        style={{ marginTop: `${mt}px` }}
-                      />
-                    ))}
-                  </div>
-                ))}
-              </div>
-              {/* Repeat marker */}
-              <div className="absolute right-1/4 top-0 h-full w-px border-l-2 border-dashed border-accent" />
-            </div>
-            <div className="mt-2 flex justify-between text-xs text-muted-foreground">
-              <span>0:00</span>
-              <span>1:24</span>
-              <span>2:48</span>
-            </div>
-          </div>
-
-          {/* Controls */}
-          <div className="mt-8 flex items-center justify-between">
-            {/* Playback controls */}
-            <div className="flex items-center gap-4">
-              <button type="button" className="text-muted-foreground transition-colors hover:text-foreground">
-                <SkipBack className="h-5 w-5" />
-              </button>
-              <button type="button" className="flex h-12 w-12 items-center justify-center rounded-full bg-accent text-accent-foreground transition-transform hover:scale-105">
-                <Play className="h-5 w-5 ml-0.5" />
-              </button>
-              <button type="button" className="text-muted-foreground transition-colors hover:text-foreground">
-                <SkipForward className="h-5 w-5" />
-              </button>
-            </div>
-
-            {/* Tempo slider */}
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">Tempo</span>
-              <div className="relative h-2 w-32 rounded-full bg-secondary">
-                <div className="absolute left-0 top-0 h-full w-1/2 rounded-full bg-accent" />
-                <div className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-accent bg-background" />
-              </div>
-              <span className="w-12 text-sm font-medium">100%</span>
-            </div>
-
-            {/* Hand toggles */}
-            <div className="flex items-center gap-2">
-              <button type="button" className="rounded-lg border border-accent bg-accent/10 px-3 py-1.5 text-sm font-medium text-accent">
-                LH
-              </button>
-              <button type="button" className="rounded-lg border border-border bg-transparent px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
-                RH
-              </button>
-              <button type="button" className="rounded-lg border border-border bg-transparent px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:border-accent hover:text-foreground">
-                Both
-              </button>
-            </div>
-          </div>
-
-          {/* Loop controls */}
-          <div className="mt-6 flex items-center gap-4 border-t border-border pt-6">
-            <span className="text-sm text-muted-foreground">Loop:</span>
-            <div className="flex items-center gap-2">
-              {["1 bar", "2 bars", "4 bars", "Section"].map((loop, i) => (
-                <button
-                  key={loop}
-                  type="button"
-                  className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-                    i === 1
-                      ? "bg-accent text-accent-foreground"
-                      : "bg-secondary text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {loop}
-                </button>
-              ))}
-            </div>
-          </div>
+        <div className="mt-12 overflow-hidden rounded-2xl border border-border bg-card shadow-2xl shadow-accent/5">
+          <Image
+            src="/screenshots/app-demo.png"
+            alt="ScoreSense practice interface playing Liszt's La Campanella, showing falling notes above an 88-key keyboard, the practice timeline, transport controls, and the piece library"
+            width={3200}
+            height={1760}
+            className="h-auto w-full"
+            sizes="(min-width: 1024px) 1024px, 100vw"
+          />
         </div>
       </div>
     </section>
@@ -456,17 +343,17 @@ function FAQ() {
     {
       question: "Is this accurate?",
       answer:
-        "Playback is note-perfect — the notes come directly from the file with no recognition step. MusicXML files also preserve hand assignments, dynamics, and repeats. MIDI files get automatic hand separation based on pitch range.",
+        "Playback is note-perfect — the notes come directly from the file with no recognition step. MusicXML files also preserve hand assignments, dynamics, and repeats. MIDI files get automatic hand separation from the file's own track/channel structure when it's available, falling back to pitch-based separation when it isn't.",
     },
     {
-      question: "Can I export MIDI?",
+      question: "Can I back up my practice progress?",
       answer:
-        "Absolutely! Once your sheet music is converted, you can export the MIDI file to use in any DAW, notation software, or other music applications. The export includes all tempo markings and dynamics.",
+        "Yes — your XP, streaks, loop points, and practice history are stored locally in your browser. Use the export/import buttons in the app to download a JSON backup and restore it on another device.",
     },
     {
       question: "Is my music private?",
       answer:
-        "Yes, your privacy is our priority. All processing happens locally in your browser—your sheet music never leaves your device. We don't store, share, or have access to any of your uploaded files.",
+        "Yes, your privacy is our priority. All processing happens locally in your browser — your files never leave your device. We don't store, share, or have access to any of your uploaded files.",
     },
   ];
 

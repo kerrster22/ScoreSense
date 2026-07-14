@@ -4,10 +4,38 @@ const DEFAULTS: Required<AlignOptions> = {
   maxTimeDeltaSec: 0.35,
   chordWindowSec: 0.02,
   preferLongerDuration: false,
+  midiHandHint: () => undefined,
+  preferMidiHand: false,
 }
 
 function clamp01(v: number) {
   return Math.max(0, Math.min(1, v))
+}
+
+type HandResolution = { hand: "left" | "right"; handSource: "midi" | "xml" | "fallback" }
+
+/**
+ * Reconciles the MIDI file's own track/channel-derived hand guess against
+ * the MusicXML score's staff-derived hand. When the MIDI split is confident
+ * (`preferMidiHand`, set by the caller from buildHandAssigner's confidence),
+ * it wins even for notes that matched an XML note — scores routinely engrave
+ * a passage on the "wrong" staff for legibility (cross-staff notation),
+ * while the MIDI transcription follows the actually-performed hand. For
+ * notes with no XML match at all, the MIDI hint always wins over the crude
+ * pitch-threshold fallback when one is available.
+ */
+function resolveHand(
+  me: MidiNoteEvent,
+  xmlHand: "left" | "right" | undefined,
+  o: Required<AlignOptions>
+): HandResolution {
+  const midiHand = o.midiHandHint(me.id)
+  if (xmlHand) {
+    if (o.preferMidiHand && midiHand) return { hand: midiHand, handSource: "midi" }
+    return { hand: xmlHand, handSource: "xml" }
+  }
+  if (midiHand) return { hand: midiHand, handSource: "midi" }
+  return { hand: me.midi <= 60 ? "left" : "right", handSource: "fallback" }
 }
 
 /**
@@ -67,18 +95,20 @@ export function alignMidiWithMusicXml(
       matchedXmlIds.add(best.xml.id)
       matched++
       const confidence = clamp01(best.score)
+      const { hand, handSource } = resolveHand(me, best.xml.hand, o)
       unified.push({
         id: `u-m-${me.id}-${best.xml.id}`,
         midi: me.midi,
         noteName: me.noteName,
         startTime: me.startTime,
         duration: o.preferLongerDuration ? Math.max(me.duration, best.xml.duration ?? 0) : me.duration,
-        hand: best.xml.hand ?? "right",
+        hand,
         staff: best.xml.staff,
         voice: best.xml.voice,
         measure: best.xml.measure,
         velocity: me.velocity,
-        source: { midiId: me.id, xmlId: best.xml.id, confidence },
+        fingering: best.xml.fingering,
+        source: { midiId: me.id, xmlId: best.xml.id, confidence, handSource },
       })
       continue
     }
@@ -97,32 +127,37 @@ export function alignMidiWithMusicXml(
       xmlNextIndexByPitch.set(me.midi, foundIdx + 1)
       const confidence = 0.4 // lower for sequence-only mapping
       matched++
+      const { hand, handSource } = resolveHand(me, xe.hand, o)
       unified.push({
         id: `u-m-${me.id}-${xe.id}`,
         midi: me.midi,
         noteName: me.noteName,
         startTime: me.startTime,
         duration: o.preferLongerDuration ? Math.max(me.duration, xe.duration ?? 0) : me.duration,
-        hand: xe.hand ?? "right",
+        hand,
         staff: xe.staff,
         voice: xe.voice,
         measure: xe.measure,
         velocity: me.velocity,
-        source: { midiId: me.id, xmlId: xe.id, confidence },
+        fingering: xe.fingering,
+        source: { midiId: me.id, xmlId: xe.id, confidence, handSource },
       })
       continue
     }
 
     // No XML at all for this pitch – create unified with low confidence and empty xmlId
-    unified.push({
-      id: `u-m-${me.id}`,
-      midi: me.midi,
-      noteName: me.noteName,
-      startTime: me.startTime,
-      duration: me.duration,
-      hand: me.midi <= 60 ? "left" : "right",
-      source: { midiId: me.id, xmlId: undefined, confidence: 0.2 },
-    })
+    {
+      const { hand, handSource } = resolveHand(me, undefined, o)
+      unified.push({
+        id: `u-m-${me.id}`,
+        midi: me.midi,
+        noteName: me.noteName,
+        startTime: me.startTime,
+        duration: me.duration,
+        hand,
+        source: { midiId: me.id, xmlId: undefined, confidence: 0.2, handSource },
+      })
+    }
   }
 
   // For any unmatched XML notes (e.g., editorial notes) we can optionally include them with xml timing
@@ -138,7 +173,8 @@ export function alignMidiWithMusicXml(
       staff: xe.staff,
       voice: xe.voice,
       measure: xe.measure,
-      source: { xmlId: xe.id, confidence: 0.2 },
+      fingering: xe.fingering,
+      source: { xmlId: xe.id, confidence: 0.2, handSource: "xml" },
     })
   }
 

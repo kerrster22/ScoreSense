@@ -7,6 +7,8 @@ interface VisualAidsTogglesProps {
   showKeyLabels: boolean
   onShowNoteNamesChange: (value: boolean) => void
   onShowKeyLabelsChange: (value: boolean) => void
+  colorblindMode?: boolean
+  onColorblindModeChange?: (value: boolean) => void
 }
 
 export function VisualAidsToggles({
@@ -14,6 +16,8 @@ export function VisualAidsToggles({
   showKeyLabels,
   onShowNoteNamesChange,
   onShowKeyLabelsChange,
+  colorblindMode = false,
+  onColorblindModeChange,
 }: VisualAidsTogglesProps) {
   return (
     <div className="space-y-3">
@@ -42,6 +46,18 @@ export function VisualAidsToggles({
             Show note names on keys
           </Label>
         </div>
+        {onColorblindModeChange && (
+          <div className="flex items-center gap-2">
+            <Switch
+              id="colorblind-mode"
+              checked={colorblindMode}
+              onCheckedChange={onColorblindModeChange}
+            />
+            <Label htmlFor="colorblind-mode" className="text-sm text-foreground">
+              Colorblind-safe hand colors
+            </Label>
+          </div>
+        )}
       </div>
     </div>
   )

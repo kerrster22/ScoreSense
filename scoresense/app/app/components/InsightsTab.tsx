@@ -13,14 +13,45 @@ import {
   Target,
   Waves,
   UploadCloud,
+  AlertTriangle,
+  History,
+  Music2,
+  Sparkles,
 } from "lucide-react"
 import type { PatternInsight } from "./types"
+import type { Recommendation } from "../lib/practiceCoach"
+
+export interface WeakSpot {
+  bar: number
+  count: number
+  startSec: number
+  endSec: number
+}
+
+export interface PracticeHistory {
+  sessions: { date: string; minutes: number }[]
+  lastPlayedAt?: string
+}
 
 interface InsightsTabProps {
   insights: PatternInsight[]
   isComplete: boolean
   pieceLoaded: boolean
   onPracticeSection: (start: number, end: number) => void
+  weakSpots?: WeakSpot[]
+  practiceHistory?: PracticeHistory | null
+  recommendations?: Recommendation[]
+}
+
+function daysSince(iso: string): number {
+  return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)
+}
+
+function formatLastPlayed(iso: string): string {
+  const days = daysSince(iso)
+  if (days <= 0) return "today"
+  if (days === 1) return "yesterday"
+  return `${days} days ago`
 }
 
 type FilterType = "all" | "exact" | "near" | "transposed" | "left-hand"
@@ -54,6 +85,15 @@ const FILTER_TABS: { value: FilterType; label: string }[] = [
   { value: "left-hand",  label: "Left Hand" },
 ]
 
+/** Collapses consecutive repeats (a chord held across several bars) into one entry for display. */
+function collapseProgression(progression: string[]): string[] {
+  const collapsed: string[] = []
+  for (const chord of progression) {
+    if (collapsed[collapsed.length - 1] !== chord) collapsed.push(chord)
+  }
+  return collapsed
+}
+
 function ScorePip({ score }: { score: number }) {
   const pct = Math.round(score * 100)
   const color =
@@ -73,6 +113,9 @@ export function InsightsTab({
   isComplete,
   pieceLoaded,
   onPracticeSection,
+  weakSpots = [],
+  practiceHistory = null,
+  recommendations = [],
 }: InsightsTabProps) {
   const [filter, setFilter] = useState<FilterType>("all")
 
@@ -89,7 +132,8 @@ export function InsightsTab({
     )
   }
 
-  if (insights.length === 0) {
+  const hasHistory = !!practiceHistory && practiceHistory.sessions.length > 0
+  if (insights.length === 0 && weakSpots.length === 0 && !hasHistory && recommendations.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
         <Lightbulb className="h-12 w-12 text-muted-foreground/20 mb-4" />
@@ -110,6 +154,91 @@ export function InsightsTab({
 
   return (
     <div className="space-y-4">
+      {/* Recommended for you — from the Adaptive Practice Coach */}
+      {recommendations.length > 0 && (
+        <Card className="border-accent/30 bg-accent/5">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles className="h-4 w-4 text-accent" />
+              <h3 className="text-sm font-semibold text-foreground">Recommended for you</h3>
+            </div>
+            <div className="space-y-2.5">
+              {recommendations.map((rec, i) => (
+                <div key={i}>
+                  <div className="text-sm font-medium text-foreground">{rec.label}</div>
+                  <p className="text-xs text-muted-foreground">{rec.detail}</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Practice history — per-piece session log */}
+      {hasHistory && practiceHistory && (
+        <Card className="border-border/40 bg-card/60">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <History className="h-4 w-4 text-accent" />
+              <h3 className="text-sm font-semibold text-foreground">Practice history</h3>
+            </div>
+            <div className="flex flex-wrap items-center gap-4 text-sm">
+              <span className="text-foreground">
+                <span className="font-semibold">
+                  {Math.round(practiceHistory.sessions.reduce((sum, s) => sum + s.minutes, 0))}
+                </span>{" "}
+                <span className="text-muted-foreground">min practiced</span>
+              </span>
+              <span className="text-foreground">
+                <span className="font-semibold">{practiceHistory.sessions.length}</span>{" "}
+                <span className="text-muted-foreground">
+                  session{practiceHistory.sessions.length !== 1 ? "s" : ""}
+                </span>
+              </span>
+              {practiceHistory.lastPlayedAt && (
+                <span className="text-muted-foreground">
+                  Last played {formatLastPlayed(practiceHistory.lastPlayedAt)}
+                </span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Weak spots — bars with the most recorded misses from live-scored play-alongs */}
+      {weakSpots.length > 0 && (
+        <Card className="border-destructive/30 bg-destructive/5">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <AlertTriangle className="h-4 w-4 text-destructive" />
+              <h3 className="text-sm font-semibold text-foreground">Bars you keep missing</h3>
+            </div>
+            <div className="space-y-2">
+              {weakSpots.map((w) => (
+                <div key={w.bar} className="flex items-center justify-between gap-3">
+                  <span className="text-sm text-foreground">
+                    Bar {w.bar}
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {w.count} miss{w.count !== 1 ? "es" : ""}
+                    </span>
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={!isComplete}
+                    onClick={() => onPracticeSection(w.startSec, w.endSec)}
+                    className="shrink-0 gap-1.5"
+                  >
+                    <Target className="h-3.5 w-3.5" />
+                    Practice
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Stats header */}
       <div className="flex flex-wrap items-center gap-2 px-1">
         <span className="text-sm text-muted-foreground">
@@ -191,6 +320,12 @@ export function InsightsTab({
                         <p className="text-sm text-foreground leading-relaxed">
                           {insight.text}
                         </p>
+                        {insight.chordProgression && insight.chordProgression.length > 0 && (
+                          <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <Music2 className="h-3 w-3 shrink-0 text-accent/70" />
+                            {collapseProgression(insight.chordProgression).join(" · ")}
+                          </p>
+                        )}
                       </div>
 
                       <Button
