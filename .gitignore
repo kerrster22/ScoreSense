@@ -1,4 +1,7 @@
 /node_modules
 /scoresense/app/Pieces
-scoresense/.env.example
-scoresense/package-lock.json
+/scoresense/.env.example
+/scoresense/package-lock.json
+/scoresense/.env.example
+*.example
+/scoresense/package-lock.json
