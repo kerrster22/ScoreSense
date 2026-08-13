@@ -9,3 +9,4 @@
 # Sentry Config File
 .env.sentry-build-plugin
 package-lock.json
+scoresense/.env.example
