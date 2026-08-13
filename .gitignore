@@ -5,3 +5,7 @@
 /scoresense/.env.example
 *.example
 /scoresense/package-lock.json
+
+# Sentry Config File
+.env.sentry-build-plugin
+package-lock.json

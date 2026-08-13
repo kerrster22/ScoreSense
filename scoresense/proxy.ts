@@ -3,14 +3,14 @@ import { updateSession } from "@/lib/supabase/middleware"
 import { safeRedirectPath } from "@/lib/supabase/redirect"
 
 /**
- * Route prefixes that require a signed-in user. Extend this list as more
- * ScoreSense data (songs, practice sessions, settings, ...) moves server-side —
- * everything else stays public, matching the current local-first app.
+ * Route prefixes that require a signed-in user. The practice app itself
+ * (/app) lives here now — the unauthenticated preview lives at /try instead,
+ * a separate public route restricted to 3 curated pieces.
  */
-const PROTECTED_PREFIXES = ["/account"]
+const PROTECTED_PREFIXES = ["/account", "/app"]
 
-/** Auth pages a logged-in user shouldn't need to see again. */
-const AUTH_PAGES = ["/login", "/signup"]
+/** Pages a logged-in user shouldn't need to see again — bounce straight to the app. */
+const AUTH_PAGES = ["/login", "/signup", "/try"]
 
 function matchesPrefix(pathname: string, prefixes: string[]): boolean {
   return prefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))

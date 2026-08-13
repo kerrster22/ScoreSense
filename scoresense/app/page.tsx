@@ -109,7 +109,7 @@ function Header() {
         </nav>
         <div className="flex items-center gap-4">
           <AuthNavLinks />
-          <Link href="/app">
+          <Link href="/try">
             <Button size="sm" variant="outline">
               Try it now
             </Button>
@@ -134,7 +134,7 @@ function Hero() {
           with practice loops, hand separation, and repeat-aware guidance.
         </p>
         <div className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
-          <Link href="/app">
+          <Link href="/try">
             <Button
               size="lg"
               className="gap-2 bg-accent text-accent-foreground hover:bg-accent/90"
