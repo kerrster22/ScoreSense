@@ -22,6 +22,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import { AuthNavLinks } from "@/components/auth/AuthNavLinks";
 
 type FallingNote = { left: number; delay: number; duration: number }
 
@@ -106,11 +107,14 @@ function Header() {
             FAQ
           </a>
         </nav>
-        <Link href="/app">
-          <Button size="sm" className="bg-accent text-accent-foreground hover:bg-accent/90">
-            Try it now
-          </Button>
-        </Link>
+        <div className="flex items-center gap-4">
+          <AuthNavLinks />
+          <Link href="/app">
+            <Button size="sm" variant="outline">
+              Try it now
+            </Button>
+          </Link>
+        </div>
       </div>
     </header>
   );

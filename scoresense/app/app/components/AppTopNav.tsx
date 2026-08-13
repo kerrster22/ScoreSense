@@ -4,6 +4,7 @@ import { useRef } from "react"
 import { Music, Download, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { downloadProgressExport, importProgressData } from "../lib/exportImport"
+import { AuthNavLinks } from "@/components/auth/AuthNavLinks"
 
 export function AppTopNav() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -79,6 +80,7 @@ export function AppTopNav() {
             <a href="https://github.com/kerrster22/ScoreSense/issues" target="_blank" rel="noreferrer" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
               Feedback
             </a>
+            <AuthNavLinks />
           </div>
         </div>
       </div>
