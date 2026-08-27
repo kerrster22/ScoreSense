@@ -15,7 +15,7 @@ import type {
   NamedLoop,
   HandAudioMode,
   HandVisualMode,
-} from "./types"
+} from "@/types/practice"
 
 interface SidebarControlsProps {
   // Transport

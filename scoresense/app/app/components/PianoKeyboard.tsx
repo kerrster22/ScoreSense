@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useMemo, useRef, useState } from "react"
-import type { PianoKey } from "./types"
+import type { PianoKey } from "@/types/practice"
 
 interface PianoKeyboardProps {
   pianoKeys: PianoKey[]

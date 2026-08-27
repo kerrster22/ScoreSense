@@ -1,9 +1,20 @@
 "use client"
 
 import React, { useMemo, useRef, useState } from "react"
-import { ChevronDown, Library, Search, Clock } from "lucide-react"
+import { ChevronDown, Library, Search, Clock, Trash2 } from "lucide-react"
 import type { ComposerGroup, PieceFile } from "@/types/pieces"
-import { getDifficultyByPath, getLastPlayedByPath } from "@/app/app/lib/persistence"
+import { getDifficultyByPath, getLastPlayedByPath } from "@/lib/persistence"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 
 type SortMode = "alpha" | "difficulty" | "recent"
 
@@ -11,6 +22,8 @@ type PieceLibraryProps = {
   pieces: ComposerGroup[]
   selectedPiece?: PieceFile | null
   onSelectPiece: (piece: PieceFile) => void
+  /** Only called for uploaded pieces (piece.uploadId set) — bundled library pieces are never deletable. */
+  onDeletePiece?: (piece: PieceFile) => void
   /** When true, renders as a collapsed single-row toggle until the user opens it */
   defaultCollapsed?: boolean
   /** Per-piece progress keyed by filePath */
@@ -27,6 +40,7 @@ export const PieceLibrary: React.FC<PieceLibraryProps> = ({
   pieces,
   selectedPiece,
   onSelectPiece,
+  onDeletePiece,
   defaultCollapsed = false,
   pieceProgress = {},
 }) => {
@@ -184,11 +198,11 @@ export const PieceLibrary: React.FC<PieceLibraryProps> = ({
                           const lastPlayed = getLastPlayedByPath(piece.filePath)
                           const isStale = lastPlayed && daysSince(lastPlayed) >= STALE_DAYS_THRESHOLD
                           return (
-                          <li key={piece.filePath}>
+                          <li key={piece.filePath} className="flex items-center gap-1">
                             <button
                               type="button"
                               data-row-button
-                              className={`w-full text-left px-2 py-1 rounded transition-colors text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                              className={`flex-1 min-w-0 text-left px-2 py-1 rounded transition-colors text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                                 selectedPiece?.filePath === piece.filePath
                                   ? "bg-accent/20 text-accent"
                                   : "hover:bg-primary/10 text-foreground"
@@ -230,6 +244,34 @@ export const PieceLibrary: React.FC<PieceLibraryProps> = ({
                                 </div>
                               </div>
                             </button>
+                            {piece.uploadId && onDeletePiece && (
+                              <AlertDialog>
+                                <AlertDialogTrigger asChild>
+                                  <button
+                                    type="button"
+                                    className="shrink-0 p-1.5 rounded text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                                    aria-label={`Delete ${piece.title}`}
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </AlertDialogTrigger>
+                                <AlertDialogContent>
+                                  <AlertDialogHeader>
+                                    <AlertDialogTitle>Delete &ldquo;{piece.title}&rdquo;?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                      This removes it from My Uploads and frees up a slot. This can&apos;t be
+                                      undone — you&apos;ll need to re-upload the file to add it back.
+                                    </AlertDialogDescription>
+                                  </AlertDialogHeader>
+                                  <AlertDialogFooter>
+                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                    <AlertDialogAction onClick={() => onDeletePiece(piece)}>
+                                      Delete
+                                    </AlertDialogAction>
+                                  </AlertDialogFooter>
+                                </AlertDialogContent>
+                              </AlertDialog>
+                            )}
                           </li>
                           )
                         })}

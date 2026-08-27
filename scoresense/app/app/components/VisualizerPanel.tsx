@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useMemo, useRef } from "react"
-import type { Note, PianoKey, LoopRange } from "./types"
+import type { Note, PianoKey, LoopRange } from "@/types/practice"
 import { detectChord } from "../lib/chordDetection"
 
 // =============================================================================

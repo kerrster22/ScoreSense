@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 import fs from "fs"
 import path from "path"
 import { loadMidiFromUrl } from "./midi"
-import { loadMusicXmlFromUrl } from "./musicmxl"
+import { loadMusicXmlFromUrl } from "@/lib/musicmxl"
 import { alignMidiWithMusicXml } from "./hybrid/align"
 import { buildHandAssigner } from "./handDetection"
 
@@ -16,7 +16,7 @@ import { buildHandAssigner } from "./handDetection"
 // the fix: MIDI-track-vs-final-hand disagreement should be at (or very
 // near) zero, down from a measured 16.7% before the fix.
 
-const PIECE_DIR = path.resolve(__dirname, "../../Pieces")
+const PIECE_DIR = path.resolve(__dirname, "../../../public/pieces")
 const BASENAME = "etude-s-1413-in-g-minor-la-campanella-liszt"
 
 function mockFetchFromDisk() {
@@ -36,8 +36,8 @@ describe("hand assignment regression (La Campanella, real files)", () => {
   it("MIDI track split and final assigned hand agree for effectively all notes", async () => {
     const restore = mockFetchFromDisk()
     try {
-      const midiResult = await loadMidiFromUrl(`/Pieces/${BASENAME}.mid`)
-      const xmlResult = await loadMusicXmlFromUrl(`/Pieces/${BASENAME}.mxl`)
+      const midiResult = await loadMidiFromUrl(`/pieces/${BASENAME}.mid`)
+      const xmlResult = await loadMusicXmlFromUrl(`/pieces/${BASENAME}.mxl`)
 
       const { assign, confidence } = buildHandAssigner(midiResult.tracks, midiResult.events)
       expect(confidence).toBe("high") // this file has a clean 2-track split

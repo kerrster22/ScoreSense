@@ -21,7 +21,7 @@ export const scanPiecesDirectory = (rootDir: string): string[] => {
       } else {
         const ext = path.extname(entry).toLowerCase()
         if (PIECE_FILE_EXTENSIONS.includes(ext as typeof PIECE_FILE_EXTENSIONS[number])) {
-          result.push(path.relative(process.cwd(), fullPath).replace(/\\/g, "/"))
+          result.push(path.relative(rootDir, fullPath).replace(/\\/g, "/"))
         }
       }
     }

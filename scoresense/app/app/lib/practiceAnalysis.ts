@@ -7,8 +7,8 @@
  * MIDI-only files (via UnifiedNoteEvent + BPM-derived measure map).
  */
 
-import type { Segment, Lesson, PatternInsight } from "../components/types"
-import type { MeasureMapEntry, MusicXmlNoteEvent } from "./musicmxl"
+import type { Segment, Lesson, PatternInsight } from "@/types/practice"
+import type { MeasureMapEntry, MusicXmlNoteEvent } from "@/lib/musicmxl"
 import { detectChord } from "./chordDetection"
 
 // ---------------------------------------------------------------------------

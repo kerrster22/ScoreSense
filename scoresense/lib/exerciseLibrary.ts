@@ -1,5 +1,5 @@
 import type { ExerciseDefinition, ExerciseNote, MobilityTip } from "@/types/exercises"
-import { CHORD_QUALITIES, NOTE_NAMES, buildChordDefinition } from "@/app/app/lib/chordLibrary"
+import { CHORD_QUALITIES, NOTE_NAMES, buildChordDefinition } from "@/lib/chordLibrary"
 
 // Baseline roots for the easy/medium tier — five common practice keys.
 const EXERCISE_ROOTS = [0, 2, 5, 7, 10] // C, D, F, G, Bb

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { loadMusicXmlFromUrl, type MusicXmlParseResult, type MeasureMapEntry, type ParserStats } from "../lib/musicmxl"
+import { loadMusicXmlFromUrl, type MusicXmlParseResult, type MeasureMapEntry, type ParserStats } from "@/lib/musicmxl"
 
 type MusicXmlState =
   | { status: "idle" }

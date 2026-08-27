@@ -1,4 +1,4 @@
-import type { Note, HandVisualMode, HandAudioMode } from "../components/types"
+import type { Note, HandVisualMode, HandAudioMode } from "@/types/practice"
 
 /**
  * Filter notes by visual hand mode.

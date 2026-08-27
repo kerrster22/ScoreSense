@@ -43,6 +43,6 @@ export const config = {
      * session cookie stays fresh across the whole app without re-running on
      * every image/font request.
      */
-    "/((?!_next/static|_next/image|favicon.ico|icon-|apple-icon|screenshots/).*)",
+    "/((?!_next/static|_next/image|favicon.ico|icon-|apple-icon|screenshots/|api/webhooks/).*)",
   ],
 }

@@ -1,8 +1,8 @@
 "use client"
 
 import React, { useRef, useEffect, useCallback } from "react"
-import type { Note, PatternInsight } from "./types"
-import type { MeasureMapEntry } from "../lib/musicmxl"
+import type { Note, PatternInsight } from "@/types/practice"
+import type { MeasureMapEntry } from "@/lib/musicmxl"
 
 interface PieceTimelineProps {
   notes: Note[]

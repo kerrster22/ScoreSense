@@ -1,6 +1,6 @@
 import type { TutorialSegment } from "@/types/tutorial"
-import type { MeasureMapEntry, MusicXmlNoteEvent } from "@/app/app/lib/musicmxl"
-import type { Segment } from "@/app/app/components/types"
+import type { MeasureMapEntry, MusicXmlNoteEvent } from "@/lib/musicmxl"
+import type { Segment } from "@/types/practice"
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value))
 

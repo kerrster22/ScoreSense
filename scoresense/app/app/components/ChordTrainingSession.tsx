@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { X as XIcon, CheckCircle2, Clock } from "lucide-react"
 import { detectChord } from "../lib/chordDetection"
-import { getAllChordDefinitions, getEssentialChordDefinitions, type ChordDefinition } from "../lib/chordLibrary"
+import { getAllChordDefinitions, getEssentialChordDefinitions, type ChordDefinition } from "@/lib/chordLibrary"
 import { recordChordTrainingResult } from "../lib/chordMastery"
 import { noteNameToMidi } from "../lib/piano"
 

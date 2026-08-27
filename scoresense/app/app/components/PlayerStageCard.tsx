@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Maximize2, Minimize2, MoreHorizontal } from "lucide-react"
 import { VisualizerPanel } from "./VisualizerPanel"
 import { PianoKeyboard } from "./PianoKeyboard"
-import type { Note, PianoKey, LoopRange } from "./types"
+import type { Note, PianoKey, LoopRange } from "@/types/practice"
 
 interface PlayerStageCardProps {
   notes: Note[]

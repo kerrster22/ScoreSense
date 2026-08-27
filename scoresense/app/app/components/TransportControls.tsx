@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button"
 import { Microscope as Metronome } from "lucide-react"
-import type { LoopRange } from "./types"
+import type { LoopRange } from "@/types/practice"
 
 interface TransportControlsProps {
   isComplete: boolean

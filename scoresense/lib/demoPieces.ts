@@ -16,17 +16,17 @@ function demoPiece(
     composer,
     title,
     fileName: `${baseName}.mid`,
-    filePath: `app/Pieces/${baseName}.mid`,
+    filePath: `/pieces/${baseName}.mid`,
     extension: ".mid",
-    midiPath: `app/Pieces/${baseName}.mid`,
-    xmlPath: `app/Pieces/${baseName}.mxl`,
+    midiPath: `/pieces/${baseName}.mid`,
+    xmlPath: `/pieces/${baseName}.mxl`,
   }
 }
 
 /**
  * The unauthenticated /try experience is locked to exactly these 3 pieces —
  * one per difficulty tier, chosen by running the app's own computeDifficulty
- * heuristic (app/app/lib/difficulty.ts) over every piece in app/Pieces and
+ * heuristic (app/app/lib/difficulty.ts) over every piece in public/pieces and
  * picking a low/mid/high representative, rather than guessing by reputation.
  */
 export const DEMO_PIECES: DemoPieceOption[] = [

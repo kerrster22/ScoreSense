@@ -13,7 +13,7 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react"
-import type { LoopOption, HandOption, NamedLoop, HandAudioMode, HandVisualMode } from "./types"
+import type { LoopOption, HandOption, NamedLoop, HandAudioMode, HandVisualMode } from "@/types/practice"
 
 interface PracticeControlsProps {
   isComplete: boolean

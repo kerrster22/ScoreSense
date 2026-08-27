@@ -2,7 +2,7 @@
 
 import React, { useRef, useEffect, useState, useMemo } from "react"
 import type { TutorialSegment, TutorialLessonState } from "@/types/tutorial"
-import type { Note } from "@/app/app/components/types"
+import type { Note } from "@/types/practice"
 
 // ---------------------------------------------------------------------------
 // Tiny canvas thumbnail — piano-roll note density for a single segment

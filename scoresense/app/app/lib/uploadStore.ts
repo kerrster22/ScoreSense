@@ -1,14 +1,11 @@
 "use client"
 
 /**
- * IndexedDB-backed storage for user-uploaded piece files. localStorage can't
- * hold binary blobs at any real scale, so uploads that should survive a
- * reload/return-visit (the "My Uploads" library section) live here instead.
+ * Server-backed storage for user-uploaded piece files (Supabase Storage +
+ * the piece_uploads table, via /api/uploads). Replaces the old IndexedDB
+ * implementation — uploads now belong to the account (not the browser), so
+ * the 25-piece cap can be enforced server-side and pieces sync across devices.
  */
-
-const DB_NAME = "scoresense-uploads"
-const DB_VERSION = 1
-const STORE_NAME = "files"
 
 export interface UploadRecord {
   id: string
@@ -17,80 +14,56 @@ export interface UploadRecord {
   addedAt: string
 }
 
-interface StoredFile extends UploadRecord {
-  blob: Blob
+export type UploadErrorCode = "upload_limit_reached" | "subscription_required" | "invalid_file" | "unknown"
+
+const UPLOAD_ERROR_CODES: readonly UploadErrorCode[] = [
+  "upload_limit_reached",
+  "subscription_required",
+  "invalid_file",
+  "unknown",
+]
+
+export class UploadError extends Error {
+  code: UploadErrorCode
+  constructor(code: UploadErrorCode) {
+    super(code)
+    this.code = code
+  }
 }
 
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION)
-    req.onupgradeneeded = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: "id" })
-      }
-    }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
-  })
+function toUploadErrorCode(value: unknown): UploadErrorCode {
+  return typeof value === "string" && (UPLOAD_ERROR_CODES as string[]).includes(value)
+    ? (value as UploadErrorCode)
+    : "unknown"
 }
 
-/** Stable id from name+size+lastModified so re-uploading the same file reuses the same entry. */
-function idFor(file: File): string {
-  return `${file.name}_${file.size}_${file.lastModified}`
-}
+export async function saveUpload(file: File): Promise<UploadRecord> {
+  const formData = new FormData()
+  formData.append("file", file)
 
-export async function saveUpload(file: File): Promise<string> {
-  if (typeof window === "undefined" || !("indexedDB" in window)) return idFor(file)
-  const id = idFor(file)
-  const db = await openDb()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite")
-    const record: StoredFile = { id, name: file.name, size: file.size, addedAt: new Date().toISOString(), blob: file }
-    tx.objectStore(STORE_NAME).put(record)
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
-  })
-  db.close()
-  return id
+  const res = await fetch("/api/uploads", { method: "POST", body: formData })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new UploadError(toUploadErrorCode(body?.error))
+  }
+  return res.json()
 }
 
 export async function listUploads(): Promise<UploadRecord[]> {
-  if (typeof window === "undefined" || !("indexedDB" in window)) return []
-  const db = await openDb()
-  const records = await new Promise<StoredFile[]>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readonly")
-    const req = tx.objectStore(STORE_NAME).getAll()
-    req.onsuccess = () => resolve(req.result as StoredFile[])
-    req.onerror = () => reject(req.error)
-  })
-  db.close()
-  return records
-    .map(({ id, name, size, addedAt }) => ({ id, name, size, addedAt }))
-    .sort((a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime())
+  const res = await fetch("/api/uploads")
+  if (!res.ok) return []
+  const body = await res.json().catch(() => ({ uploads: [] }))
+  return body.uploads ?? []
 }
 
-export async function getUploadBlob(id: string): Promise<Blob | null> {
-  if (typeof window === "undefined" || !("indexedDB" in window)) return null
-  const db = await openDb()
-  const record = await new Promise<StoredFile | undefined>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readonly")
-    const req = tx.objectStore(STORE_NAME).get(id)
-    req.onsuccess = () => resolve(req.result as StoredFile | undefined)
-    req.onerror = () => reject(req.error)
-  })
-  db.close()
-  return record?.blob ?? null
+/** Returns a short-lived signed URL for playback, or null on failure. */
+export async function getUploadUrl(id: string): Promise<string | null> {
+  const res = await fetch(`/api/uploads/${encodeURIComponent(id)}/file`)
+  if (!res.ok) return null
+  const body = await res.json().catch(() => ({}))
+  return body.url ?? null
 }
 
 export async function deleteUpload(id: string): Promise<void> {
-  if (typeof window === "undefined" || !("indexedDB" in window)) return
-  const db = await openDb()
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite")
-    tx.objectStore(STORE_NAME).delete(id)
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error)
-  })
-  db.close()
+  await fetch(`/api/uploads/${encodeURIComponent(id)}`, { method: "DELETE" })
 }

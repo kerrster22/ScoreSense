@@ -1,4 +1,4 @@
-import { CHORD_QUALITIES, INVERSION_LABELS, NOTE_NAMES, type ChordQuality } from "./chordLibrary"
+import { CHORD_QUALITIES, INVERSION_LABELS, NOTE_NAMES, type ChordQuality } from "@/lib/chordLibrary"
 
 export interface DetectedChord {
   symbol: string

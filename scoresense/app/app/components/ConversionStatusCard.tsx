@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Check, Loader2, Circle, AlertTriangle } from "lucide-react"
-import type { ConversionStep } from "./types"
+import type { ConversionStep } from "@/types/practice"
 
 interface ConversionStatusCardProps {
   steps: ConversionStep[]

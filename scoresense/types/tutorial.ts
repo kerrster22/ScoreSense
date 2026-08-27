@@ -1,4 +1,4 @@
-import type { Segment } from "@/app/app/components/types"
+import type { Segment } from "@/types/practice"
 
 export type TutorialSegment = {
   id: string

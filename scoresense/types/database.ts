@@ -56,6 +56,88 @@ export interface Database {
           }
         ]
       }
+      subscriptions: {
+        Row: {
+          user_id: string
+          stripe_customer_id: string
+          stripe_subscription_id: string | null
+          status: string
+          price_id: string | null
+          current_period_end: string | null
+          cancel_at_period_end: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          user_id: string
+          stripe_customer_id: string
+          stripe_subscription_id?: string | null
+          status?: string
+          price_id?: string | null
+          current_period_end?: string | null
+          cancel_at_period_end?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          user_id?: string
+          stripe_customer_id?: string
+          stripe_subscription_id?: string | null
+          status?: string
+          price_id?: string | null
+          current_period_end?: string | null
+          cancel_at_period_end?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "subscriptions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      piece_uploads: {
+        Row: {
+          id: string
+          user_id: string
+          filename: string
+          storage_path: string
+          extension: string
+          size_bytes: number
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          filename: string
+          storage_path: string
+          extension: string
+          size_bytes: number
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          filename?: string
+          storage_path?: string
+          extension?: string
+          size_bytes?: number
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "piece_uploads_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
     }
     Views: Record<string, never>
     Functions: Record<string, never>
@@ -67,3 +149,10 @@ export interface Database {
 export type Profile = Database["public"]["Tables"]["profiles"]["Row"]
 export type ProfileInsert = Database["public"]["Tables"]["profiles"]["Insert"]
 export type ProfileUpdate = Database["public"]["Tables"]["profiles"]["Update"]
+
+export type Subscription = Database["public"]["Tables"]["subscriptions"]["Row"]
+export type SubscriptionInsert = Database["public"]["Tables"]["subscriptions"]["Insert"]
+export type SubscriptionUpdate = Database["public"]["Tables"]["subscriptions"]["Update"]
+
+export type PieceUpload = Database["public"]["Tables"]["piece_uploads"]["Row"]
+export type PieceUploadInsert = Database["public"]["Tables"]["piece_uploads"]["Insert"]

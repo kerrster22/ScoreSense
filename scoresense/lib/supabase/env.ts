@@ -15,3 +15,7 @@ export const supabasePublishableKey = () =>
     "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
   )
+
+/** Server-only — bypasses Row Level Security. See lib/supabase/service.ts. */
+export const supabaseSecretKey = () =>
+  requireEnv("SUPABASE_SECRET_KEY", process.env.SUPABASE_SECRET_KEY)

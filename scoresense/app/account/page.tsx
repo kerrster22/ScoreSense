@@ -1,10 +1,14 @@
+import Link from "next/link"
 import { redirect } from "next/navigation"
 import type { Metadata } from "next"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { Button } from "@/components/ui/button"
 import { SignOutButton } from "@/components/auth/SignOutButton"
+import { ManageBillingButton } from "@/components/billing/ManageBillingButton"
 import { ProfileForm } from "./ProfileForm"
 import { createClient } from "@/lib/supabase/server"
+import { hasActiveAccess } from "@/lib/stripe/access"
 
 export const metadata: Metadata = {
   title: "Account - ScoreSense",
@@ -28,6 +32,21 @@ export default async function AccountPage() {
     .select("display_name, email, avatar_url")
     .eq("id", user.id)
     .single()
+
+  const { data: subscription } = await supabase
+    .from("subscriptions")
+    .select("status, current_period_end, cancel_at_period_end")
+    .eq("user_id", user.id)
+    .maybeSingle()
+
+  const isPaid = hasActiveAccess(subscription?.status)
+  const periodEndLabel = subscription?.current_period_end
+    ? new Date(subscription.current_period_end).toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })
+    : null
 
   return (
     <main className="mx-auto min-h-screen max-w-2xl px-6 py-16">
@@ -63,6 +82,37 @@ export default async function AccountPage() {
         <CardContent>
           <Separator className="mb-6" />
           <ProfileForm initialDisplayName={profile?.display_name ?? ""} />
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="text-lg">Billing</CardTitle>
+          <CardDescription>
+            {isPaid ? (
+              subscription?.status === "past_due" ? (
+                "Payment issue — update your card to keep your subscription active."
+              ) : subscription?.cancel_at_period_end && periodEndLabel ? (
+                `Your subscription is set to cancel on ${periodEndLabel}.`
+              ) : periodEndLabel ? (
+                `Active — renews on ${periodEndLabel}.`
+              ) : (
+                "Active."
+              )
+            ) : (
+              "No active subscription."
+            )}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Separator className="mb-6" />
+          {isPaid ? (
+            <ManageBillingButton />
+          ) : (
+            <Button asChild className="bg-accent text-accent-foreground hover:bg-accent/90">
+              <Link href="/app/upgrade">Subscribe</Link>
+            </Button>
+          )}
         </CardContent>
       </Card>
     </main>

@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import {
@@ -26,18 +25,25 @@ import { AuthNavLinks } from "@/components/auth/AuthNavLinks";
 
 type FallingNote = { left: number; delay: number; duration: number }
 
-function FallingNotes() {
-  const [notes, setNotes] = useState<FallingNote[]>([])
+function seededRandom(seed: number) {
+  const x = Math.sin(seed) * 10000
+  return x - Math.floor(x)
+}
 
-  useEffect(() => {
-    setNotes(
-      Array.from({ length: 20 }, () => ({
-        left: Math.random() * 100,
-        delay: Math.random() * 10,
-        duration: 10 + Math.random() * 10,
-      }))
-    )
-  }, [])
+// Rounded to a few decimal places so the SSR-rendered style string matches
+// what the browser re-serializes into the CSSOM after parsing — full-
+// precision floats here round-trip to a different string and trip a
+// hydration mismatch even though the underlying value is identical.
+const round = (n: number) => Math.round(n * 1000) / 1000
+
+const FALLING_NOTES: FallingNote[] = Array.from({ length: 20 }, (_, i) => ({
+  left: round(seededRandom(i) * 100),
+  delay: round(seededRandom(i + 100) * 10),
+  duration: round(10 + seededRandom(i + 200) * 10),
+}))
+
+function FallingNotes() {
+  const notes = FALLING_NOTES
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">

@@ -10,7 +10,7 @@ import {
   getAllChordDefinitions,
   type ChordDefinition,
   type ChordQuality,
-} from "../lib/chordLibrary"
+} from "@/lib/chordLibrary"
 import { countMastered, getChordMasteryEntry } from "../lib/chordMastery"
 import { generateFullPianoKeys, midiToNoteName } from "../lib/piano"
 

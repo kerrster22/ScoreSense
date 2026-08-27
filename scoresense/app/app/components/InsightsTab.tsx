@@ -18,7 +18,7 @@ import {
   Music2,
   Sparkles,
 } from "lucide-react"
-import type { PatternInsight } from "./types"
+import type { PatternInsight } from "@/types/practice"
 import type { Recommendation } from "../lib/practiceCoach"
 
 export interface WeakSpot {
