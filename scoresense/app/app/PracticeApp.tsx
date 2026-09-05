@@ -44,8 +44,7 @@ import { DemoPieceSwitcher } from "@/components/DemoPieceSwitcher"
 import { buildPieceLibrary, MOCK_PIECE_FILE_PATHS } from "@/lib/buildPieceLibrary"
 import { DEMO_PIECES } from "@/lib/demoPieces"
 import type { ComposerGroup, PieceFile } from "@/types/pieces"
-import { saveUpload, listUploads, getUploadUrl, deleteUpload, UploadError, type UploadRecord } from "./lib/uploadStore"
-import { MAX_UPLOADS_PER_USER } from "@/lib/uploads/constants"
+import { saveUpload, listUploads, getUploadBlob, type UploadRecord } from "./lib/uploadStore"
 
 // Tutorial segment feature
 import { TutorialPanel } from "@/components/TutorialPanel"
@@ -437,7 +436,7 @@ export function PracticeApp({ mode }: { mode: PracticeAppMode }) {
     refreshMyUploads()
   }, [refreshMyUploads])
 
-  // Merge "My Uploads" (server-backed, per-account) in as its own composer group.
+  // Merge the local "My Uploads" IndexedDB library in as its own composer group.
   const combinedPieceLibrary: ComposerGroup[] = useMemo(() => {
     if (myUploads.length === 0) return pieceLibrary
     const uploadGroup: ComposerGroup = {
@@ -757,13 +756,6 @@ export function PracticeApp({ mode }: { mode: PracticeAppMode }) {
   const startConversion = useCallback(() => {
     if (!file) return
 
-    if (myUploads.length >= MAX_UPLOADS_PER_USER) {
-      toast.error("Upload limit reached", {
-        description: "Delete a piece from My Uploads to add a new one, or contact us for more.",
-      })
-      return
-    }
-
     // Revoke any previous blob URL
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current)
@@ -773,22 +765,11 @@ export function PracticeApp({ mode }: { mode: PracticeAppMode }) {
     const url = URL.createObjectURL(file.fileObject)
     blobUrlRef.current = url
 
-    // Persist the raw bytes to Supabase Storage so this upload survives a
-    // reload and shows up under "My Uploads" without asking the user to
-    // re-pick it. This is fire-and-forget — the file still plays for this
-    // session (via the local blob URL above) even if persistence fails.
+    // Persist the raw bytes to IndexedDB so this upload survives a reload
+    // and shows up under "My Uploads" without asking the user to re-pick it.
     saveUpload(file.fileObject)
       .then(() => refreshMyUploads())
-      .catch((err) => {
-        const code = err instanceof UploadError ? err.code : "unknown"
-        const messages: Record<string, string> = {
-          upload_limit_reached: "Upload limit reached — this piece will only be available for this session.",
-          subscription_required: "Subscribe to save uploads to My Uploads.",
-          invalid_file: "That file couldn't be saved to My Uploads, but it will still work for this session.",
-          unknown: "We couldn't save this upload. It will still work for this session.",
-        }
-        toast.error(messages[code] ?? messages.unknown)
-      })
+      .catch(() => {})
 
     audioEngineRef.current.stop()
     audioEngineRef.current.setLoop({ enabled: false })
@@ -810,7 +791,7 @@ export function PracticeApp({ mode }: { mode: PracticeAppMode }) {
     } else {
       setMusicXmlUrl(url)
     }
-  }, [file, refreshMyUploads, myUploads])
+  }, [file, refreshMyUploads])
 
   const cancelConversion = useCallback(() => {
     if (blobUrlRef.current) {
@@ -1160,14 +1141,16 @@ export function PracticeApp({ mode }: { mode: PracticeAppMode }) {
     setQuickLoopActive(false)
     setDrillActive(false)
 
-    // "My Uploads" pieces have no static file path — fetch a short-lived
-    // signed URL from Supabase Storage instead.
+    // "My Uploads" pieces have no server file path — reconstruct a blob URL
+    // from IndexedDB instead of fetching a static file.
     if (piece.uploadId) {
       const isMidi = !!piece.midiPath
       setMidiUrl(null)
       setMusicXmlUrl(null)
-      getUploadUrl(piece.uploadId).then((url) => {
-        if (!url) return
+      getUploadBlob(piece.uploadId).then((blob) => {
+        if (!blob) return
+        const url = URL.createObjectURL(blob)
+        blobUrlRef.current = url
         if (isMidi) setMidiUrl(url)
         else setMusicXmlUrl(url)
         setIsComplete(true)
@@ -1182,22 +1165,6 @@ export function PracticeApp({ mode }: { mode: PracticeAppMode }) {
     setMusicXmlUrl(pieceXmlUrl)
     setIsComplete(true)
   }, [])
-
-  const handleDeletePiece = useCallback(
-    (piece: PieceFile) => {
-      if (!piece.uploadId) return
-      deleteUpload(piece.uploadId).then(() => {
-        refreshMyUploads()
-        if (selectedPiece?.uploadId === piece.uploadId) {
-          setSelectedPiece(null)
-          setMidiUrl(null)
-          setMusicXmlUrl(null)
-          setIsComplete(false)
-        }
-      })
-    },
-    [refreshMyUploads, selectedPiece]
-  )
 
   // Demo visitors never see the upload/library UI, so nothing else would ever
   // call handleSelectPiece for them — load the first curated piece up front.
@@ -1925,7 +1892,6 @@ export function PracticeApp({ mode }: { mode: PracticeAppMode }) {
               isDragging={isDragging}
               isConverting={isConverting}
               isComplete={isComplete}
-              uploadLimitReached={myUploads.length >= MAX_UPLOADS_PER_USER}
               onFileSelect={handleFileSelect}
               onFileDrop={handleDrop}
               onDragOver={handleDragOver}
@@ -2265,7 +2231,6 @@ export function PracticeApp({ mode }: { mode: PracticeAppMode }) {
                     pieces={combinedPieceLibrary}
                     selectedPiece={selectedPiece}
                     onSelectPiece={handleSelectPiece}
-                    onDeletePiece={handleDeletePiece}
                     defaultCollapsed={isComplete}
                     pieceProgress={pieceProgress}
                   />

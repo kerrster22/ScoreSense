@@ -1,9 +1,9 @@
 "use server"
 
+import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { safeRedirectPath } from "@/lib/supabase/redirect"
-import { siteOrigin } from "@/lib/siteOrigin"
 import {
   forgotPasswordSchema,
   loginSchema,
@@ -13,6 +13,11 @@ import {
 
 export interface AuthActionState {
   error: string | null
+}
+
+async function siteOrigin(): Promise<string> {
+  const headerList = await headers()
+  return headerList.get("origin") ?? headerList.get("x-forwarded-host") ?? ""
 }
 
 export async function login(

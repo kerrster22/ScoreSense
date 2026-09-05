@@ -12,8 +12,6 @@ interface UploadCardProps {
   isDragging: boolean
   isConverting: boolean
   isComplete: boolean
-  /** True once "My Uploads" is at the account's cap — blocks adding a new piece until one is deleted. */
-  uploadLimitReached?: boolean
   onFileSelect: (e: React.ChangeEvent<HTMLInputElement>) => void
   onFileDrop: (e: React.DragEvent) => void
   onDragOver: (e: React.DragEvent) => void
@@ -33,7 +31,6 @@ export function UploadCard({
   isDragging,
   isConverting,
   isComplete,
-  uploadLimitReached = false,
   onFileSelect,
   onFileDrop,
   onDragOver,
@@ -52,15 +49,13 @@ export function UploadCard({
       <CardContent className="space-y-4">
         <div
           className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
-            uploadLimitReached
-              ? "pointer-events-none border-border opacity-50"
-              : isDragging
+            isDragging
               ? "border-accent bg-accent/10"
               : "border-border hover:border-muted-foreground"
           }`}
-          onDragOver={uploadLimitReached ? undefined : onDragOver}
-          onDragLeave={uploadLimitReached ? undefined : onDragLeave}
-          onDrop={uploadLimitReached ? undefined : onFileDrop}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onFileDrop}
         >
           <Upload className="h-8 w-8 mx-auto mb-3 text-muted-foreground" />
           <p className="text-sm text-muted-foreground mb-2">
@@ -74,21 +69,13 @@ export function UploadCard({
               type="file"
               accept=".mid,.midi,.musicxml,.mxl,.xml"
               onChange={onFileSelect}
-              disabled={uploadLimitReached}
               className="hidden"
             />
-            <Button variant="outline" size="sm" disabled={uploadLimitReached} asChild>
+            <Button variant="outline" size="sm" asChild>
               <span className="cursor-pointer">Choose file</span>
             </Button>
           </label>
         </div>
-
-        {uploadLimitReached && (
-          <p className="text-xs text-center text-muted-foreground">
-            You&apos;ve reached your 25-piece upload limit. Delete a piece from My Uploads to add a new
-            one, or contact us for more.
-          </p>
-        )}
 
         {file && (
           <div className="flex items-center gap-3 p-3 bg-secondary/50 rounded-lg">
@@ -112,7 +99,7 @@ export function UploadCard({
 
         <Button
           className="w-full"
-          disabled={!file || isConverting || isComplete || uploadLimitReached}
+          disabled={!file || isConverting || isComplete}
           onClick={onStartConversion}
         >
           Load piece
